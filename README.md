@@ -10,7 +10,7 @@ is converted. Mono and RGB images are supported.
 ## Usage
 
 ```
-xisf2png <input_dir> [output_dir] [--recursive|-r] [--overwrite]
+xisf2png <input_dir> [output_dir] [--recursive|-r] [--overwrite] [--resize4k]
 ```
 
 If `output_dir` is omitted, PNGs are written next to their source files.
@@ -19,6 +19,7 @@ If `output_dir` is omitted, PNGs are written next to their source files.
 | ------------------- | ----------------------------------------------------------- |
 | `-r`, `--recursive` | Recurse into subfolders; the output tree mirrors the input. |
 | `--overwrite`       | Overwrite existing `.png` files (default: skip them).       |
+| `--resize4k`        | Scale each PNG to fit within 3840×2160 (up or down, aspect ratio kept, no padding) and stamp the file name in the bottom-right corner (Franklin Gothic Medium Cond, 48 pt, white). Requires [ImageMagick](https://imagemagick.org) (`magick`) on `PATH`; if it's missing or fails, conversion continues and a warning is printed at the end. |
 | `-h`, `--help`      | Show help.                                                  |
 
 Per-file output lines: `OK <path>`, `SKIP <path>`, `ERROR <path>: <reason>`.

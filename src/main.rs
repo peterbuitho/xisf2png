@@ -15,11 +15,13 @@ fn main() -> ExitCode {
     let mut output_dir: Option<String> = None;
     let mut recursive = false;
     let mut overwrite = false;
+    let mut resize4k = false;
 
     for a in &args {
         match a.as_str() {
             "--recursive" | "-r" => recursive = true,
             "--overwrite" => overwrite = true,
+            "--resize4k" | "-resize4k" => resize4k = true,
             "--help" | "-h" | "/?" => {
                 usage();
                 return ExitCode::SUCCESS;
@@ -73,6 +75,9 @@ fn main() -> ExitCode {
     }
 
     let (mut converted, mut skipped, mut failed) = (0u32, 0u32, 0u32);
+    let mut warnings: Vec<String> = Vec::new();
+    // Set to false after a "program not found" error so we don't retry per file.
+    let mut magick_available = true;
 
     for file in &files {
         let rel = file.strip_prefix(input_dir).unwrap_or(file);
@@ -83,6 +88,9 @@ fn main() -> ExitCode {
             Ok(Outcome::Converted) => {
                 println!("OK    {rel_display}");
                 converted += 1;
+                if resize4k && magick_available {
+                    resize_and_label(&dest, &mut warnings, &mut magick_available);
+                }
             }
             Ok(Outcome::Skipped) => {
                 println!("SKIP  {rel_display}");
@@ -97,6 +105,13 @@ fn main() -> ExitCode {
 
     println!();
     println!("Converted: {converted}   Skipped: {skipped}   Failed: {failed}");
+
+    if !warnings.is_empty() {
+        println!();
+        for w in &warnings {
+            println!("WARNING: {w}");
+        }
+    }
 
     if failed > 0 {
         ExitCode::from(1)
@@ -137,6 +152,52 @@ enum Outcome {
     Skipped,
 }
 
+/// Post-process a freshly written PNG with ImageMagick: scale to fit within
+/// 3840x2160 (up or down, aspect ratio kept, no padding) and stamp the file
+/// name in the bottom-right corner. Failures are collected as warnings so the
+/// batch keeps going; a missing `magick` binary disables further attempts.
+fn resize_and_label(dest: &Path, warnings: &mut Vec<String>, magick_available: &mut bool) {
+    let label = dest
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let result = std::process::Command::new("magick")
+        .arg(dest)
+        .args(["-resize", "3840x2160"])
+        .args(["-font", "Franklin-Gothic-Medium-Cond"])
+        .args(["-pointsize", "48"])
+        .args(["-gravity", "southeast"])
+        .args(["-fill", "white"])
+        .args(["-annotate", "+30+30"])
+        .arg(&label)
+        .arg(dest)
+        .output();
+
+    match result {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            warnings.push(format!(
+                "ImageMagick failed on {}: {}",
+                dest.display(),
+                stderr.trim().lines().next().unwrap_or("unknown error")
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            *magick_available = false;
+            warnings.push(
+                "ImageMagick ('magick') not found on PATH - PNGs were converted \
+                 but not resized/labelled."
+                    .into(),
+            );
+        }
+        Err(e) => {
+            warnings.push(format!("Could not run ImageMagick on {}: {e}", dest.display()));
+        }
+    }
+}
+
 fn convert_one(
     src: &Path,
     dest: &Path,
@@ -173,11 +234,14 @@ fn usage() {
     eprintln!(
         "xisf2png - batch convert XISF astronomical images to PNG\n\n\
          Usage:\n\
-         \x20 xisf2png <input_dir> [output_dir] [--recursive|-r] [--overwrite]\n\n\
+         \x20 xisf2png <input_dir> [output_dir] [--recursive|-r] [--overwrite] [--resize4k]\n\n\
          If output_dir is omitted, PNGs are written next to their source files.\n\n\
          Options:\n\
          \x20 -r, --recursive   recurse into subfolders (output mirrors structure)\n\
          \x20     --overwrite    overwrite existing .png files (default: skip)\n\
+         \x20     --resize4k     scale each PNG to fit 3840x2160 (aspect kept, no\n\
+         \x20                    padding) and stamp the file name bottom-right\n\
+         \x20                    (requires ImageMagick 'magick' on PATH)\n\
          \x20 -h, --help        show this help"
     );
 }

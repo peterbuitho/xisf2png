@@ -1,0 +1,23 @@
+[package]
+name = "xisf2png"
+version = "0.1.0"
+edition = "2021"
+description = "Batch convert XISF astronomical images to PNG"
+
+[[bin]]
+name = "xisf2png"
+path = "src/main.rs"
+
+[dependencies]
+roxmltree = "0.20"
+base64 = "0.22"
+hex = "0.4"
+flate2 = "1"
+lz4_flex = "0.11"
+ruzstd = "0.7"
+png = "0.17"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"

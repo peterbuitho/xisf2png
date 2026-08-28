@@ -19,7 +19,7 @@ If `output_dir` is omitted, PNGs are written next to their source files.
 | ------------------- | ----------------------------------------------------------- |
 | `-r`, `--recursive` | Recurse into subfolders; the output tree mirrors the input. |
 | `--overwrite`       | Overwrite existing `.png` files (default: skip them).       |
-| `--resize4k`        | Scale each PNG to fit within 3840×2160 (up or down, aspect ratio kept, no padding) and stamp the file name in the bottom-right corner (Franklin Gothic Medium Cond, 48 pt, white). Requires [ImageMagick](https://imagemagick.org) (`magick`) on `PATH`; if it's missing or fails, conversion continues and a warning is printed at the end. |
+| `--resize4k`        | Scale each PNG (up or down, aspect ratio kept) to cover 3840×2160, then center-crop to exactly 3840×2160 — no padding — and stamp the file name in the bottom-right corner (Franklin Gothic Medium Cond, 48 pt, white). Requires [ImageMagick](https://imagemagick.org) (`magick`) on `PATH`; if it's missing or fails, conversion continues and a warning is printed at the end. |
 | `-h`, `--help`      | Show help.                                                  |
 
 Per-file output lines: `OK <path>`, `SKIP <path>`, `ERROR <path>: <reason>`.

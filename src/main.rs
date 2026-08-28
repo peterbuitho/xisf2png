@@ -152,10 +152,11 @@ enum Outcome {
     Skipped,
 }
 
-/// Post-process a freshly written PNG with ImageMagick: scale to fit within
-/// 3840x2160 (up or down, aspect ratio kept, no padding) and stamp the file
-/// name in the bottom-right corner. Failures are collected as warnings so the
-/// batch keeps going; a missing `magick` binary disables further attempts.
+/// Post-process a freshly written PNG with ImageMagick: scale (up or down,
+/// aspect ratio kept) to cover 3840x2160, center-crop the overflow so the
+/// result is exactly 3840x2160, and stamp the file name in the bottom-right
+/// corner. Failures are collected as warnings so the batch keeps going; a
+/// missing `magick` binary disables further attempts.
 fn resize_and_label(dest: &Path, warnings: &mut Vec<String>, magick_available: &mut bool) {
     let label = dest
         .file_stem()
@@ -164,7 +165,9 @@ fn resize_and_label(dest: &Path, warnings: &mut Vec<String>, magick_available: &
 
     let result = std::process::Command::new("magick")
         .arg(dest)
-        .args(["-resize", "3840x2160"])
+        .args(["-resize", "3840x2160^"])
+        .args(["-gravity", "center"])
+        .args(["-extent", "3840x2160"])
         .args(["-font", "Franklin-Gothic-Medium-Cond"])
         .args(["-pointsize", "48"])
         .args(["-gravity", "southeast"])
@@ -239,9 +242,9 @@ fn usage() {
          Options:\n\
          \x20 -r, --recursive   recurse into subfolders (output mirrors structure)\n\
          \x20     --overwrite    overwrite existing .png files (default: skip)\n\
-         \x20     --resize4k     scale each PNG to fit 3840x2160 (aspect kept, no\n\
-         \x20                    padding) and stamp the file name bottom-right\n\
-         \x20                    (requires ImageMagick 'magick' on PATH)\n\
+         \x20     --resize4k     scale each PNG to exactly 3840x2160 (aspect kept,\n\
+         \x20                    center-cropped, no padding) and stamp the file\n\
+         \x20                    name bottom-right (requires ImageMagick on PATH)\n\
          \x20 -h, --help        show this help"
     );
 }

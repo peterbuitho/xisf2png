@@ -172,7 +172,7 @@ fn resize_and_label(dest: &Path, warnings: &mut Vec<String>, magick_available: &
         .args(["-pointsize", "48"])
         .args(["-gravity", "southeast"])
         .args(["-fill", "white"])
-        .args(["-annotate", "+30+30"])
+        .args(["-annotate", "+60+120"])
         .arg(&label)
         .arg(dest)
         .output();

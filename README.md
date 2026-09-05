@@ -165,8 +165,11 @@ this.
 
 The second line lists up to three other catalogue ids (Messier, Caldwell,
 NGC, IC, Sharpless, Barnard, LBN, LDN, vdB, Collinder, Melotte, Cederblad,
-Arp, UGC, PGC, HD, HIP in that priority), the SIMBAD object type in plain
-words, and J2000 coordinates.
+Arp, UGC, PGC, HD, HIP in that priority), the object type in plain words,
+and J2000 coordinates. For galaxies the type comes from the Hubble
+morphology ("Spiral galaxy", "Barred spiral galaxy", "Elliptical galaxy",
+"Lenticular galaxy", "Irregular galaxy") rather than SIMBAD's activity class,
+so NGC 2403 reads "Spiral galaxy", not "Galaxy (active nucleus)".
 
 **Caldwell numbers and nicknames.** SIMBAD does not know the Caldwell
 catalogue and lacks many popular nicknames, so the tool carries its own

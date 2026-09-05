@@ -99,6 +99,8 @@ pub struct ObjectInfo {
     aliases_norm: HashSet<String>,
     /// SIMBAD object type code (e.g. "G", "HII", "OpC").
     pub otype: String,
+    /// Hubble morphological type for galaxies (e.g. "SAB(s)cd"), if known.
+    pub morph_type: Option<String>,
     pub ra_deg: Option<f64>,
     pub dec_deg: Option<f64>,
 }
@@ -136,8 +138,16 @@ impl ObjectInfo {
         usize::MAX
     }
 
-    /// Build from a SIMBAD TAP row: main_id, '|'-separated ids, otype, ra, dec.
-    fn from_tap(main_id: &str, ids: &str, otype: &str, ra: Option<f64>, dec: Option<f64>) -> ObjectInfo {
+    /// Build from a SIMBAD TAP row: main_id, '|'-separated ids, otype,
+    /// morphological type, ra, dec.
+    fn from_tap(
+        main_id: &str,
+        ids: &str,
+        otype: &str,
+        morph: Option<&str>,
+        ra: Option<f64>,
+        dec: Option<f64>,
+    ) -> ObjectInfo {
         let main_id = collapse_ws(main_id);
         let main_id = main_id.strip_prefix("NAME ").map(str::to_string).unwrap_or(main_id);
         let aliases: Vec<String> = ids
@@ -146,10 +156,17 @@ impl ObjectInfo {
             .filter(|s| !s.is_empty())
             .chain(std::iter::once(main_id.clone()))
             .collect();
-        ObjectInfo::from_aliases(main_id, aliases, otype.trim().to_string(), ra, dec)
+        ObjectInfo::from_aliases(main_id, aliases, otype.trim().to_string(), clean_morph(morph), ra, dec)
     }
 
-    fn from_aliases(main_id: String, aliases: Vec<String>, otype: String, ra_deg: Option<f64>, dec_deg: Option<f64>) -> ObjectInfo {
+    fn from_aliases(
+        main_id: String,
+        aliases: Vec<String>,
+        otype: String,
+        morph_type: Option<String>,
+        ra_deg: Option<f64>,
+        dec_deg: Option<f64>,
+    ) -> ObjectInfo {
         let mut designations = Vec::new();
         for cat in CATALOGS {
             for alias in &aliases {
@@ -184,12 +201,21 @@ impl ObjectInfo {
             designations,
             aliases_norm,
             otype,
+            morph_type,
             ra_deg,
             dec_deg,
         }
     }
 
+    /// Plain-words type. For galaxies the Hubble morphology wins ("Spiral
+    /// galaxy") over SIMBAD's activity class ("Galaxy (active nucleus)"),
+    /// which is what a picture of NGC 2403 is about.
     pub fn type_description(&self) -> String {
+        if is_galaxy_type(&self.otype) {
+            if let Some(m) = self.morph_type.as_deref().and_then(morphology_description) {
+                return m.to_string();
+            }
+        }
         otype_description(&self.otype).to_string()
     }
 
@@ -365,7 +391,7 @@ fn cone_search(agent: &ureq::Agent, ra: f64, dec: f64, radius: f64, kind: ConeKi
     };
     let adql = format!(
         "SELECT TOP 400 b.main_id, b.otype, b.ra, b.dec, \
-         DISTANCE(POINT('ICRS', b.ra, b.dec), POINT('ICRS', {ra:.6}, {dec:.6})) AS d, i.ids \
+         DISTANCE(POINT('ICRS', b.ra, b.dec), POINT('ICRS', {ra:.6}, {dec:.6})) AS d, i.ids, b.morph_type \
          FROM basic AS b JOIN ids AS i ON i.oidref = b.oid \
          WHERE CONTAINS(POINT('ICRS', b.ra, b.dec), CIRCLE('ICRS', {ra:.6}, {dec:.6}, {radius:.4})) = 1 \
          AND b.otype IN ({types}){name_filter} ORDER BY d ASC"
@@ -403,10 +429,12 @@ pub fn pick_from_tap_tsv(tsv: &str, require_name: bool) -> Option<ObjectInfo> {
         if cols.len() < 6 {
             continue;
         }
+        let morph = cols.get(6).map(|c| unquote(c));
         let info = ObjectInfo::from_tap(
             &unquote(cols[0]),
             &unquote(cols[5]),
             &unquote(cols[1]),
+            morph.as_deref(),
             cols[2].trim().parse().ok(),
             cols[3].trim().parse().ok(),
         );
@@ -453,6 +481,7 @@ pub fn parse_sesame(xml: &str) -> Result<Option<ObjectInfo>, String> {
         .map(str::to_string)
         .unwrap_or(main_id);
     let otype = child_text(&resolver, "otype").unwrap_or_default().trim().to_string();
+    let morph = clean_morph(child_text(&resolver, "MType").as_deref());
     let ra_deg = child_text(&resolver, "jradeg").and_then(|s| s.trim().parse().ok());
     let dec_deg = child_text(&resolver, "jdedeg").and_then(|s| s.trim().parse().ok());
 
@@ -464,7 +493,81 @@ pub fn parse_sesame(xml: &str) -> Result<Option<ObjectInfo>, String> {
         .chain(std::iter::once(main_id.clone()))
         .collect();
 
-    Ok(Some(ObjectInfo::from_aliases(main_id, aliases, otype, ra_deg, dec_deg)))
+    Ok(Some(ObjectInfo::from_aliases(main_id, aliases, otype, morph, ra_deg, dec_deg)))
+}
+
+fn clean_morph(m: Option<&str>) -> Option<String> {
+    m.map(str::trim).filter(|s| !s.is_empty() && *s != "~").map(str::to_string)
+}
+
+/// SIMBAD object types that are galaxies (where morphology is meaningful),
+/// including the active-nucleus classes whose host galaxy is what the
+/// picture shows (Centaurus A is filed as a blazar).
+fn is_galaxy_type(otype: &str) -> bool {
+    matches!(
+        otype.trim_end_matches('?'),
+        "G" | "AGN" | "GiG" | "GiP" | "GiC" | "BiC" | "SBG" | "EmG" | "H2G" | "LSB" | "rG"
+            | "SyG" | "Sy1" | "Sy2" | "LIN" | "IG" | "PaG" | "BLL" | "Bla" | "QSO"
+    )
+}
+
+/// Hubble / de Vaucouleurs morphology code in plain words:
+/// "SAB(s)cd" -> Spiral galaxy, "SB(r)b" -> Barred spiral galaxy,
+/// "E+0-1 pec" -> Elliptical galaxy, "S0" -> Lenticular galaxy,
+/// "IB(s)m" -> Irregular galaxy, "dE" / "dSph" -> Dwarf ... galaxy.
+pub fn morphology_description(code: &str) -> Option<&'static str> {
+    let c: String = code
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    if c.is_empty() {
+        return None;
+    }
+    let (dwarf, body) = match c.strip_prefix('d') {
+        Some(rest) if rest.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()) => (true, rest),
+        _ => (false, c.as_str()),
+    };
+    // Ring/spiral qualifiers like "(s)", "(r)", "(rs)" and the a–d stage
+    // follow the class letters, so a prefix test on the upper-cased code is
+    // enough to find the class.
+    let up = body.to_ascii_uppercase();
+
+    let class = if up.starts_with("SPH") || up.starts_with("DSPH") {
+        "Spheroidal"
+    } else if up.starts_with("CD") {
+        "Giant elliptical"
+    } else if up.starts_with('E') {
+        "Elliptical"
+    } else if up.starts_with("S0") || up.starts_with("SA0") || up.starts_with("SB0") || up.starts_with("SAB0") {
+        "Lenticular"
+    } else if up.starts_with("SB") {
+        "Barred spiral"
+    } else if up.starts_with("SA") || up.starts_with('S') {
+        "Spiral"
+    } else if up.starts_with('I') {
+        "Irregular"
+    } else if up.starts_with("RING") {
+        "Ring"
+    } else {
+        return None;
+    };
+    Some(match (dwarf, class) {
+        (true, "Elliptical") => "Dwarf elliptical galaxy",
+        (true, "Spheroidal") => "Dwarf spheroidal galaxy",
+        (true, "Irregular") => "Dwarf irregular galaxy",
+        (true, "Spiral") | (true, "Barred spiral") => "Dwarf spiral galaxy",
+        (true, _) => "Dwarf galaxy",
+        (false, "Spheroidal") => "Spheroidal galaxy",
+        (false, "Giant elliptical") => "Giant elliptical galaxy",
+        (false, "Elliptical") => "Elliptical galaxy",
+        (false, "Lenticular") => "Lenticular galaxy",
+        (false, "Barred spiral") => "Barred spiral galaxy",
+        (false, "Spiral") => "Spiral galaxy",
+        (false, "Irregular") => "Irregular galaxy",
+        (false, "Ring") => "Ring galaxy",
+        _ => return None,
+    })
 }
 
 /// If `alias` is "<simbad prefix><number>" for this catalogue, return the
@@ -1109,6 +1212,37 @@ mod tests {
     }
 
     #[test]
+    fn morphology_words() {
+        assert_eq!(morphology_description("SAB(s)cd"), Some("Spiral galaxy"));
+        assert_eq!(morphology_description("SA(s)b"), Some("Spiral galaxy"));
+        assert_eq!(morphology_description("Sc"), Some("Spiral galaxy"));
+        assert_eq!(morphology_description("SB(r)b"), Some("Barred spiral galaxy"));
+        assert_eq!(morphology_description("SB(s)m"), Some("Barred spiral galaxy"));
+        assert_eq!(morphology_description("E+0-1 pec"), Some("Elliptical galaxy"));
+        assert_eq!(morphology_description("E3"), Some("Elliptical galaxy"));
+        assert_eq!(morphology_description("S0 pec"), Some("Lenticular galaxy"));
+        assert_eq!(morphology_description("SAB0^0"), Some("Lenticular galaxy"));
+        assert_eq!(morphology_description("I0"), Some("Irregular galaxy"));
+        assert_eq!(morphology_description("IB(s)m"), Some("Irregular galaxy"));
+        assert_eq!(morphology_description("dE"), Some("Dwarf elliptical galaxy"));
+        assert_eq!(morphology_description("dSph"), Some("Dwarf spheroidal galaxy"));
+        assert_eq!(morphology_description("cD"), Some("Giant elliptical galaxy"));
+        assert_eq!(morphology_description("~"), None);
+        assert_eq!(morphology_description(""), None);
+
+        // NGC 2403 is "AGN" to SIMBAD but SAB(s)cd morphologically.
+        let xml = r#"<Sesame><Target><name>NGC2403</name><Resolver name="S"><otype>AGN</otype>
+          <MType>SAB(s)cd</MType><jradeg>114.214</jradeg><jdedeg>65.6025</jdedeg>
+          <oname>NGC  2403</oname><alias>NGC 2403</alias><alias>UGC 3918</alias></Resolver></Target></Sesame>"#;
+        let g = parse_sesame(xml).unwrap().unwrap();
+        assert_eq!(g.type_description(), "Spiral galaxy");
+        assert_eq!(g.designations, vec!["C 7", "NGC 2403", "UGC 3918"]);
+        let label = compose(&g, None);
+        assert_eq!(label.title, "NGC 2403");
+        assert!(label.subtitle.as_deref().unwrap().starts_with("C 7  ·  UGC 3918  ·  Spiral galaxy"));
+    }
+
+    #[test]
     fn tap_ranking_prefers_prominent_objects() {
         // Closest-first rows as SIMBAD returns them: obscure PNe inside M31
         // come before M31 itself; the Messier object must still win.
@@ -1152,11 +1286,17 @@ mod tests {
     #[ignore]
     fn live_simbad() {
         let mut r = Resolver::new(true);
-        for name in ["IC 1805", "NGC 7380", "NGC 2244", "M 31"] {
+        for name in ["IC 1805", "NGC 7380", "NGC 2244", "M 31", "NGC 2403", "M 82", "M 87", "NGC 5128"] {
             let mut info = r.resolve(name).cloned().expect("resolves");
             println!(
-                "{name}: main_id={} otype={} pos=({:?},{:?}) name={:?}",
-                info.main_id, info.otype, info.ra_deg, info.dec_deg, info.common_name
+                "{name}: main_id={} otype={} morph={:?} type='{}' pos=({:?},{:?}) name={:?}",
+                info.main_id,
+                info.otype,
+                info.morph_type,
+                info.type_description(),
+                info.ra_deg,
+                info.dec_deg,
+                info.common_name
             );
             if let (Some(ra), Some(dec)) = (info.ra_deg, info.dec_deg) {
                 let neb = r.nearby_named_nebula(ra, dec, COMPANION_RADIUS_DEG).cloned();

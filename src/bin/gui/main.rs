@@ -435,14 +435,16 @@ impl eframe::App for App {
                         self.resize4k || self.png_only,
                         egui::Checkbox::new(
                             &mut self.lookup,
-                            "Look up object names online (CDS / SIMBAD)",
+                            "Stamp object name (SIMBAD lookup); unticked = file name",
                         ),
                     )
                     .on_hover_text(
-                        "Identify the target from the header OBJECT keyword and/or a \
-                         catalogue id in the file name (M31, NGC_7000, Sh2-155…) and stamp \
-                         its proper name, other catalogue ids, type and coordinates. \
-                         Falls back to the file name when nothing is found or offline.",
+                        "Ticked: identify the target from the header OBJECT keyword, the \
+                         image coordinates and/or a catalogue id in the file name (M31, \
+                         NGC_7000, Sh2-155…) and stamp its proper name, other catalogue \
+                         ids, type and coordinates; falls back to the file name when \
+                         nothing is found or offline.\n\
+                         Unticked: stamp the plain file name (same as --filename in the CLI).",
                     );
                 });
             });

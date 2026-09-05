@@ -24,7 +24,7 @@ fn main() -> ExitCode {
             "--overwrite" => opts.overwrite = true,
             "--resize4k" | "-resize4k" => opts.resize4k = true,
             "--png-only" => opts.png_only = true,
-            "--no-lookup" | "--offline" => opts.lookup = false,
+            "--filename" | "--no-lookup" | "--offline" => opts.lookup = false,
             "--font" => {
                 i += 1;
                 match args.get(i) {
@@ -137,9 +137,9 @@ fn usage() {
     eprintln!(
         "xisf2png {} - batch convert XISF and FITS astronomical images to PNG\n\n\
          Usage:\n\
-         \x20 xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k]\n\
-         \x20 xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite]\n\
-         \x20 xisf2png <file>... [output_dir] [--overwrite] [--resize4k]\n\n\
+         \x20 xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename]\n\
+         \x20 xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite] [--filename]\n\
+         \x20 xisf2png <file>... [output_dir] [--overwrite] [--resize4k] [--filename]\n\n\
          Converts every .xisf, .fits, .fit and .fts file found in input_dir, or\n\
          exactly the files given (.png files are only resized/stamped).\n\
          If input_dir is omitted, the current folder is used.\n\
@@ -155,7 +155,8 @@ fn usage() {
          \x20                    up via CDS Sesame/SIMBAD, and stamped as e.g.\n\
          \x20                    \"Andromeda Galaxy (M 31)\" plus NGC/IC ids, type\n\
          \x20                    and coordinates. Falls back to the file name.\n\
-         \x20     --no-lookup    never go online; always stamp the file name\n\
+         \x20     --filename     stamp the plain file name: no header OBJECT, no\n\
+         \x20                    online lookup (aliases: --no-lookup, --offline)\n\
          \x20     --png-only     skip XISF/FITS conversion: take existing .png files in\n\
          \x20                    input_dir and only resize/annotate them (implies\n\
          \x20                    --resize4k). Edited in place when output_dir is\n\

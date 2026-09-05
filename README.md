@@ -81,9 +81,9 @@ running window instead.
 ## Command line
 
 ```
-xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--no-lookup] [--font <file>]
-xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite] [--no-lookup] [--font <file>]
-xisf2png <file>... [output_dir] [--overwrite] [--resize4k] [--no-lookup] [--font <file>]
+xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename] [--font <file>]
+xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite] [--filename] [--font <file>]
+xisf2png <file>... [output_dir] [--overwrite] [--resize4k] [--filename] [--font <file>]
 ```
 
 Every `.xisf`, `.fits`, `.fit` and `.fts` file found is converted. If
@@ -98,7 +98,7 @@ itself, or flat into `output_dir` if one is given.
 | `-r`, `--recursive` | Recurse into subfolders; the output tree mirrors the input. |
 | `--overwrite`       | Overwrite existing `.png` files (default: skip them).       |
 | `--resize4k`        | Scale each PNG (up or down, aspect ratio kept) to cover 3840×2160, then center-crop to exactly 3840×2160 — no padding — and stamp the object name in the bottom-right corner (see [Object names](#object-names)). |
-| `--no-lookup`       | Never go online: stamp the plain file name. (`--offline` is an alias.) |
+| `--filename`        | Stamp the plain file name: ignore the header `OBJECT`, never go online. (`--no-lookup` and `--offline` are aliases.) |
 | `--png-only`        | Skip XISF/FITS conversion entirely: pick up existing `.png` files in `input_dir` and only run the `--resize4k` step on them (implies `--resize4k`). With no `output_dir` the PNGs are modified in place; with one they are copied there first, honouring `--overwrite`. |
 | `--font <file>`     | A `.ttf` / `.otf` font file for the file-name stamp. Default: the bundled DejaVu Sans Condensed Bold. `--font=<file>` also works. |
 | `-V`, `--version`   | Print the version.                                          |
@@ -123,7 +123,7 @@ With `--resize4k` (or `--png-only`) the stamp is a two-line label:
 
 ```
                     Andromeda Galaxy (M 31)
-NGC 224  ·  UGC 454  ·  Galaxy (active nucleus)  ·  RA 00h 42m 44s  Dec +41° 16′ 08″
+NGC 224  ·  UGC 454  ·  Spiral galaxy  ·  RA 00h 42m 44s  Dec +41° 16′ 08″
 ```
 
 The object is identified from three sources and cross-checked:
@@ -160,7 +160,7 @@ gives "Pleiades (M 45)"). The rules:
   nebula at the same position is adopted, giving "Wizard Nebula (NGC 7380)".
 
 Each distinct name or position is looked up once per run, so a folder of 300
-subs of one target costs one or two requests. `--no-lookup` disables all of
+subs of one target costs one or two requests. `--filename` disables all of
 this.
 
 The second line lists up to three other catalogue ids (Messier, Caldwell,

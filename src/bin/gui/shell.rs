@@ -29,37 +29,25 @@ fn exe_path() -> Result<PathBuf, String> {
 #[cfg(windows)]
 mod imp {
     use super::*;
-    use std::os::windows::process::CommandExt;
-    use std::process::Command;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+    use winreg::RegKey;
 
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const VERB: &str = "xisf2png";
     const LABEL: &str = "Convert to PNG with xisf2png";
 
-    fn key(ext: &str) -> String {
-        format!(r"HKCU\Software\Classes\SystemFileAssociations\.{ext}\shell\{VERB}")
-    }
+    // Registry access goes through the Win32 API (winreg crate). An earlier
+    // version spawned hidden `reg.exe` processes, which Windows Defender's
+    // behavioural heuristics flagged as "DefenseEvasion" — a fair reading of
+    // that pattern, so we do not do that anymore.
 
-    fn reg(args: &[&str]) -> Result<(), String> {
-        let out = Command::new("reg")
-            .args(args)
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| format!("cannot run reg.exe: {e}"))?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-        }
+    fn key_path(ext: &str) -> String {
+        format!(r"Software\Classes\SystemFileAssociations\.{ext}\shell\{VERB}")
     }
 
     pub fn is_installed() -> bool {
-        Command::new("reg")
-            .args(["query", &format!(r"{}\command", key(EXTENSIONS[0]))])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey_with_flags(format!(r"{}\command", key_path(EXTENSIONS[0])), KEY_READ)
+            .is_ok()
     }
 
     pub fn install() -> Outcome {
@@ -68,23 +56,24 @@ mod imp {
             Err(e) => return Outcome { ok: false, message: e },
         };
         let command = format!("\"{exe}\" \"%1\"");
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         for ext in EXTENSIONS {
-            let k = key(ext);
-            let steps: [&[&str]; 4] = [
-                &["add", &k, "/ve", "/d", LABEL, "/f"],
-                &["add", &k, "/v", "Icon", "/d", &exe, "/f"],
+            let result = (|| -> std::io::Result<()> {
+                let (verb, _) = hkcu.create_subkey(key_path(ext))?;
+                verb.set_value("", &LABEL)?;
+                verb.set_value("Icon", &exe)?;
                 // Player: Explorer invokes the verb for any number of selected
                 // items (the default "Document" model stops at 15).
-                &["add", &k, "/v", "MultiSelectModel", "/d", "Player", "/f"],
-                &["add", &format!(r"{k}\command"), "/ve", "/d", &command, "/f"],
-            ];
-            for step in steps {
-                if let Err(e) = reg(step) {
-                    return Outcome {
-                        ok: false,
-                        message: format!("registry write failed for .{ext}: {e}"),
-                    };
-                }
+                verb.set_value("MultiSelectModel", &"Player")?;
+                let (cmd, _) = verb.create_subkey("command")?;
+                cmd.set_value("", &command)?;
+                Ok(())
+            })();
+            if let Err(e) = result {
+                return Outcome {
+                    ok: false,
+                    message: format!("registry write failed for .{ext}: {e}"),
+                };
             }
         }
         Outcome {
@@ -97,9 +86,10 @@ mod imp {
     }
 
     pub fn uninstall() -> Outcome {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         for ext in EXTENSIONS {
             // Ignore "not found" so a partial install can still be cleaned up.
-            let _ = reg(&["delete", &key(ext), "/f"]);
+            let _ = hkcu.delete_subkey_all(key_path(ext));
         }
         Outcome {
             ok: true,

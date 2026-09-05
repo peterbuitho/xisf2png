@@ -27,6 +27,16 @@ archive contains both the CLI (`xisf2png`) and the GUI (`xisf2png-gui`).
 Unpack and put the binaries somewhere on your `PATH` (and, on macOS, drag
 `xisf2png.app` to Applications).
 
+**Windows note:** the binaries are not code-signed (a certificate costs real
+money), so SmartScreen may warn on first launch ("More info → Run anyway"),
+and Windows Defender's machine-learning heuristics have occasionally
+quarantined `xisf2png-gui.exe` as a false positive (`Trojan:Win32/…!ml`). If
+that happens: open *Windows Security → Protection history*, pick the item and
+choose *Restore*, then *Allow on device*; and please report it as a false
+positive at <https://www.microsoft.com/wdsi/filesubmission> so the detection
+gets fixed for everyone. You can always build the binaries yourself with
+`cargo build --release` and compare.
+
 **macOS note:** the app is ad-hoc signed but not notarized, so the first launch
 shows an "unidentified developer" warning. Right-click the app, choose *Open*,
 and confirm once. For the CLI binary, clear the quarantine flag instead:

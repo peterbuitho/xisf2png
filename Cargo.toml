@@ -2,7 +2,8 @@
 name = "xisf2png"
 version = "0.3.0"
 edition = "2021"
-description = "Batch convert XISF astronomical images to PNG"
+description = "Convert XISF and FITS astronomical images to PNG, 4K-resized and stamped with the object name"
+build = "build.rs"
 
 [lib]
 path = "src/lib.rs"
@@ -27,6 +28,14 @@ ab_glyph = "0.2"
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster", "common-controls-v6"] }
 ureq = "3"
+
+# Windows only: registry access for the Explorer context-menu entry (no
+# reg.exe child process), and version-info + icon resources for the .exe files.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 lto = true

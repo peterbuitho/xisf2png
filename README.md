@@ -39,7 +39,8 @@ the box. It runs natively on Wayland and falls back to X11.
 ## GUI
 
 Run `xisf2png-gui` (or open `xisf2png.app` on macOS). Pick the input folder,
-optionally an output folder and a stamp font, tick the options you want, and
+optionally an output folder and a stamp font, adjust the options (the 4K
+resize with object-name stamp and the online lookup are on by default), and
 press **Convert**. Progress and a per-file log stream in as the batch runs;
 **Cancel** stops after the current file.
 

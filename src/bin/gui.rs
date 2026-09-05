@@ -32,6 +32,7 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             install_fallback_font(&cc.egui_ctx);
             Ok(Box::new(App {
+                resize4k: true,
                 lookup: true,
                 ..App::default()
             }))

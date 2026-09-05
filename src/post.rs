@@ -11,11 +11,33 @@ use image::{DynamicImage, ImageBuffer, Pixel};
 pub const TARGET_WIDTH: u32 = 3840;
 pub const TARGET_HEIGHT: u32 = 2160;
 
-/// Label size in pixels (matches ImageMagick's former `-pointsize 48`).
-const LABEL_PX: f32 = 48.0;
+/// Title size in pixels (matches ImageMagick's former `-pointsize 48`).
+const TITLE_PX: f32 = 48.0;
+/// Size of the optional second line (catalogue ids, type, coordinates).
+const SUBTITLE_PX: f32 = 30.0;
+/// Vertical gap between the two lines.
+const LINE_GAP: f32 = 14.0;
 /// Distance of the label from the right edge and bottom edge, in pixels.
 const MARGIN_RIGHT: f32 = 60.0;
 const MARGIN_BOTTOM: f32 = 120.0;
+
+/// What gets stamped on the image: a title (object name or file name) and an
+/// optional smaller line underneath it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Label {
+    pub title: String,
+    pub subtitle: Option<String>,
+}
+
+impl Label {
+    /// A single-line label.
+    pub fn plain(title: impl Into<String>) -> Self {
+        Label {
+            title: title.into(),
+            subtitle: None,
+        }
+    }
+}
 /// Soft dark shadow offset behind the white text, so the label stays readable
 /// over bright nebulosity.
 const SHADOW_OFFSET: f32 = 2.0;
@@ -50,7 +72,7 @@ impl Stamper {
     /// center-crop the overflow to exactly 3840x2160, and draw `label` in the
     /// bottom-right corner. Mono images stay mono; RGB stays RGB; anything
     /// else is converted to RGB.
-    pub fn resize_and_label(&self, img: DynamicImage, label: &str) -> DynamicImage {
+    pub fn resize_and_label(&self, img: DynamicImage, label: &Label) -> DynamicImage {
         let resized = img.resize_to_fill(
             TARGET_WIDTH,
             TARGET_HEIGHT,
@@ -74,19 +96,64 @@ impl Stamper {
         }
     }
 
-    /// Draw `text` right-aligned in the bottom-right corner: white with a soft
-    /// dark shadow.
-    fn draw_label<P>(&self, img: &mut ImageBuffer<P, Vec<u8>>, text: &str)
+    /// Draw the label right-aligned in the bottom-right corner: the subtitle
+    /// (if any) sits on the original single-line position and the title goes
+    /// above it, so nothing moves closer to the bottom edge than before.
+    fn draw_label<P>(&self, img: &mut ImageBuffer<P, Vec<u8>>, label: &Label)
     where
         P: Pixel<Subpixel = u8>,
     {
-        if text.is_empty() {
-            return;
-        }
-        let scale = PxScale::from(LABEL_PX);
-        let scaled = self.font.as_scaled(scale);
+        let right = img.width() as f32 - MARGIN_RIGHT;
+        let bottom = img.height() as f32 - MARGIN_BOTTOM;
+        let max_width = img.width() as f32 - 2.0 * MARGIN_RIGHT;
 
-        // Lay out glyphs left-to-right from x = 0 to measure the total width.
+        let title_scaled = self.font.as_scaled(PxScale::from(TITLE_PX));
+        let mut title_baseline = bottom - title_scaled.descent().abs();
+
+        if let Some(sub) = label.subtitle.as_deref().filter(|s| !s.trim().is_empty()) {
+            let sub_scaled = self.font.as_scaled(PxScale::from(SUBTITLE_PX));
+            let sub_baseline = bottom - sub_scaled.descent().abs();
+            self.draw_line(img, sub, SUBTITLE_PX, right, sub_baseline, max_width);
+            title_baseline = sub_baseline - sub_scaled.ascent() - LINE_GAP;
+        }
+
+        if !label.title.trim().is_empty() {
+            self.draw_line(img, &label.title, TITLE_PX, right, title_baseline, max_width);
+        }
+    }
+
+    /// Draw one line of text with its right edge at `right` and its baseline
+    /// at `baseline`, shrinking the font if it would exceed `max_width`.
+    fn draw_line<P>(
+        &self,
+        img: &mut ImageBuffer<P, Vec<u8>>,
+        text: &str,
+        px: f32,
+        right: f32,
+        baseline: f32,
+        max_width: f32,
+    ) where
+        P: Pixel<Subpixel = u8>,
+    {
+        let (mut glyphs, mut width, mut scale) = self.layout(text, px);
+        if width > max_width && width > 0.0 {
+            let shrunk = px * max_width / width;
+            (glyphs, width, scale) = self.layout(text, shrunk);
+        }
+        let x0 = right - width;
+
+        // Shadow first, then the white text on top.
+        let origin = point(x0, baseline);
+        let shadow_origin = point(x0 + SHADOW_OFFSET, baseline + SHADOW_OFFSET);
+        self.blit(img, &glyphs, scale, shadow_origin, 0, SHADOW_OPACITY);
+        self.blit(img, &glyphs, scale, origin, 255, 1.0);
+    }
+
+    /// Lay out glyphs left-to-right from x = 0; returns (glyph id + x offset,
+    /// total width, scale).
+    fn layout(&self, text: &str, px: f32) -> (Vec<(ab_glyph::GlyphId, f32)>, f32, PxScale) {
+        let scale = PxScale::from(px);
+        let scaled = self.font.as_scaled(scale);
         let mut glyphs = Vec::with_capacity(text.len());
         let mut x = 0.0f32;
         let mut prev = None;
@@ -99,17 +166,7 @@ impl Stamper {
             x += scaled.h_advance(id);
             prev = Some(id);
         }
-        let text_width = x;
-
-        let right = img.width() as f32 - MARGIN_RIGHT;
-        let x0 = right - text_width;
-        let baseline = img.height() as f32 - MARGIN_BOTTOM - scaled.descent().abs();
-
-        // Shadow first, then the white text on top.
-        let origin = point(x0, baseline);
-        let shadow_origin = point(x0 + SHADOW_OFFSET, baseline + SHADOW_OFFSET);
-        self.blit(img, &glyphs, scale, shadow_origin, 0, SHADOW_OPACITY);
-        self.blit(img, &glyphs, scale, origin, 255, 1.0);
+        (glyphs, x, scale)
     }
 
     /// Rasterise `glyphs` (id + x offset from `origin`, whose y is the

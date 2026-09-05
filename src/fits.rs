@@ -121,6 +121,11 @@ pub fn parse(bytes: &[u8]) -> Result<XisfImageData> {
         }
     };
 
+    let object = header
+        .string("OBJECT")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     Ok(XisfImageData {
         width,
         height,
@@ -129,6 +134,7 @@ pub fn parse(bytes: &[u8]) -> Result<XisfImageData> {
         planar: true,
         big_endian: true,
         raw_data,
+        object,
     })
 }
 

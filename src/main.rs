@@ -9,7 +9,10 @@ use xisf2png::{FileStatus, Options};
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let mut opts = Options::default();
+    let mut opts = Options {
+        lookup: true,
+        ..Options::default()
+    };
     let mut input_dir: Option<String> = None;
     let mut output_dir: Option<String> = None;
 
@@ -21,6 +24,7 @@ fn main() -> ExitCode {
             "--overwrite" => opts.overwrite = true,
             "--resize4k" | "-resize4k" => opts.resize4k = true,
             "--png-only" => opts.png_only = true,
+            "--no-lookup" | "--offline" => opts.lookup = false,
             "--font" => {
                 i += 1;
                 match args.get(i) {
@@ -79,9 +83,15 @@ fn main() -> ExitCode {
     let summary = xisf2png::run(&opts, &AtomicBool::new(false), &mut |p| {
         let rel = p.rel.display();
         match &p.status {
-            FileStatus::Ok => println!("OK    {rel}"),
+            FileStatus::Ok => match &p.label {
+                Some(label) => println!("OK    {rel}  ->  {label}"),
+                None => println!("OK    {rel}"),
+            },
             FileStatus::Skipped => println!("SKIP  {rel}"),
             FileStatus::Failed(e) => println!("ERROR {rel}: {e}"),
+        }
+        if let Some(note) = &p.note {
+            println!("      note: {note}");
         }
     });
 
@@ -103,6 +113,9 @@ fn main() -> ExitCode {
         "{verb}: {}   Skipped: {}   Failed: {}",
         summary.converted, summary.skipped, summary.failed
     );
+    for w in &summary.warnings {
+        println!("WARNING: {w}");
+    }
 
     if summary.failed > 0 {
         ExitCode::from(1)
@@ -124,8 +137,14 @@ fn usage() {
          \x20 -r, --recursive   recurse into subfolders (output mirrors structure)\n\
          \x20     --overwrite    overwrite existing .png files (default: skip)\n\
          \x20     --resize4k     scale each PNG to exactly 3840x2160 (aspect kept,\n\
-         \x20                    center-cropped, no padding) and stamp the file\n\
-         \x20                    name bottom-right\n\
+         \x20                    center-cropped, no padding) and stamp the object\n\
+         \x20                    name bottom-right. The object is identified from\n\
+         \x20                    the header OBJECT keyword and/or a catalogue id in\n\
+         \x20                    the file name (M31, NGC_7000, Sh2-155, ...), looked\n\
+         \x20                    up via CDS Sesame/SIMBAD, and stamped as e.g.\n\
+         \x20                    \"Andromeda Galaxy (M 31)\" plus NGC/IC ids, type\n\
+         \x20                    and coordinates. Falls back to the file name.\n\
+         \x20     --no-lookup    never go online; always stamp the file name\n\
          \x20     --png-only     skip XISF/FITS conversion: take existing .png files in\n\
          \x20                    input_dir and only resize/annotate them (implies\n\
          \x20                    --resize4k). Edited in place when output_dir is\n\

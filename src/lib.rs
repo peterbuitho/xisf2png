@@ -4,12 +4,13 @@
 
 pub mod batch;
 pub mod fits;
+pub mod lookup;
 pub mod pixels;
 pub mod post;
 pub mod xisf;
 
 pub use batch::{collect_files, run, FileStatus, Options, Progress, Summary};
-pub use post::Stamper;
+pub use post::{Label, Stamper};
 
 /// Crate version, for `--version` and window titles.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

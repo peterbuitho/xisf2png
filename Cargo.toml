@@ -26,6 +26,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 ab_glyph = "0.2"
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster", "common-controls-v6"] }
+ureq = "3"
 
 [profile.release]
 lto = true

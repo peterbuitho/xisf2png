@@ -46,6 +46,9 @@ pub struct XisfImageData {
     pub big_endian: bool,
     /// Raw, decompressed, un-shuffled sample bytes.
     pub raw_data: Vec<u8>,
+    /// Target name from the header (FITS `OBJECT` keyword or the XISF
+    /// `Observation:Object:Name` property), if present.
+    pub object: Option<String>,
 }
 
 #[derive(Debug)]
@@ -99,6 +102,25 @@ pub fn read(path: &Path) -> Result<XisfImageData> {
         .ok_or_else(|| XisfError("No <Image> element in XISF header.".into()))?;
 
     let attr = |name: &str| image.attribute(name);
+
+    // --- Target name (for the stamp) ---
+    let object = image
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "FITSKeyword")
+        .find(|n| n.attribute("name").is_some_and(|k| k.trim().eq_ignore_ascii_case("OBJECT")))
+        .and_then(|n| n.attribute("value"))
+        .map(|v| v.trim().trim_matches('\'').trim().to_string())
+        .or_else(|| {
+            doc.descendants()
+                .find(|n| {
+                    n.is_element()
+                        && n.tag_name().name() == "Property"
+                        && n.attribute("id") == Some("Observation:Object:Name")
+                })
+                .and_then(|n| n.text())
+                .map(|t| t.trim().to_string())
+        })
+        .filter(|s| !s.is_empty());
 
     // --- Geometry ---
     let geometry = attr("geometry")
@@ -195,6 +217,7 @@ pub fn read(path: &Path) -> Result<XisfImageData> {
     }
 
     Ok(XisfImageData {
+        object,
         width,
         height,
         channels,

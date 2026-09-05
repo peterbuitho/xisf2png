@@ -1,10 +1,11 @@
 # xisf2png
 
 Batch-convert **XISF** (PixInsight) and **FITS** astronomical images to
-**PNG**, optionally resized to 4K with the file name stamped in the corner.
-Comes as a command-line tool and a small desktop app, both pure Rust with no
-runtime dependencies, for Windows, macOS (universal Intel + Apple Silicon) and
-Linux.
+**PNG**, optionally resized to 4K with the object's name and catalogue info
+stamped in the corner ("Andromeda Galaxy (M 31)" with NGC/IC ids, type and
+coordinates underneath, looked up from SIMBAD). Comes as a command-line tool
+and a small desktop app, both Rust with no runtime dependencies, for Windows,
+macOS (universal Intel + Apple Silicon) and Linux.
 
 Each image's full data range is linearly scaled to 0–255 (a plain min/max
 stretch — no STF/MTF astronomical stretch). Only the first image in a file is
@@ -45,8 +46,8 @@ press **Convert**. Progress and a per-file log stream in as the batch runs;
 ## Command line
 
 ```
-xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--font <file>]
-xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite] [--font <file>]
+xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--no-lookup] [--font <file>]
+xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite] [--no-lookup] [--font <file>]
 ```
 
 Every `.xisf`, `.fits`, `.fit` and `.fts` file found is converted. If
@@ -58,7 +59,8 @@ edited in place).
 | ------------------- | ----------------------------------------------------------- |
 | `-r`, `--recursive` | Recurse into subfolders; the output tree mirrors the input. |
 | `--overwrite`       | Overwrite existing `.png` files (default: skip them).       |
-| `--resize4k`        | Scale each PNG (up or down, aspect ratio kept) to cover 3840×2160, then center-crop to exactly 3840×2160 — no padding — and stamp the file name in the bottom-right corner (48 px, white with a soft shadow). |
+| `--resize4k`        | Scale each PNG (up or down, aspect ratio kept) to cover 3840×2160, then center-crop to exactly 3840×2160 — no padding — and stamp the object name in the bottom-right corner (see [Object names](#object-names)). |
+| `--no-lookup`       | Never go online: stamp the plain file name. (`--offline` is an alias.) |
 | `--png-only`        | Skip XISF/FITS conversion entirely: pick up existing `.png` files in `input_dir` and only run the `--resize4k` step on them (implies `--resize4k`). With no `output_dir` the PNGs are modified in place; with one they are copied there first, honouring `--overwrite`. |
 | `--font <file>`     | A `.ttf` / `.otf` font file for the file-name stamp. Default: the bundled DejaVu Sans Condensed Bold. `--font=<file>` also works. |
 | `-V`, `--version`   | Print the version.                                          |
@@ -76,6 +78,38 @@ xisf2png "D:\previews" --png-only --recursive
 xisf2png ~/astro/previews --png-only --font ~/Library/Fonts/Futura-CondensedBold.ttf
 xisf2png --png-only                      # PNGs in the current folder, in place
 ```
+
+## Object names
+
+With `--resize4k` (or `--png-only`) the stamp is a two-line label:
+
+```
+                    Andromeda Galaxy (M 31)
+NGC 224  ·  UGC 454  ·  Galaxy (active nucleus)  ·  RA 00h 42m 44s  Dec +41° 16′ 08″
+```
+
+The object is identified from two sources and cross-checked:
+
+1. the `OBJECT` keyword in the FITS header or XISF header (what your capture
+   software was told the target was), and
+2. a catalogue designation in the file name — `M31`, `NGC_7000`, `IC 1396`,
+   `Sh2-155`, `B33`, `LDN1235`, `vdB141`, `Cr399`, `Mel15`, `Ced214`,
+   `Arp273`, `UGC`, `PGC`, `HD`, `HIP` are recognised, in any case and with
+   `_`, `-` or a space as separator. Filter letters and exposure times such
+   as `_B_120s` are not mistaken for catalogue ids.
+
+The name is resolved through the [CDS Sesame](https://cds.unistra.fr/cgi-bin/Sesame)
+service (SIMBAD), which understands free-form names too (`OBJECT = 'Pleiades'`
+gives "Pleiades (M 45)"). If the header and the file name disagree, the file
+name wins and a `note:` line is printed. If nothing resolves, or you are
+offline, the plain file name is stamped as before. Every distinct name is
+looked up once per run, so a folder of 300 subs of one target costs a single
+request. `--no-lookup` disables all of this.
+
+The second line lists up to three other catalogue ids (Messier, NGC, IC,
+Sharpless, Barnard, LBN, LDN, vdB, Collinder, Melotte, Cederblad, Arp, UGC,
+PGC, HD, HIP in that priority), the SIMBAD object type in plain words, and
+J2000 coordinates. Caldwell numbers are not in SIMBAD and are not recognised.
 
 ## Format support
 
@@ -100,9 +134,10 @@ xisf2png --png-only                      # PNGs in the current folder, in place
 
 ## Build from source
 
-Requires a Rust toolchain (install via [rustup](https://rustup.rs)). The code
-and all dependencies are pure Rust, so the same command builds both binaries
-on Windows, macOS and Linux:
+Requires a Rust toolchain (install via [rustup](https://rustup.rs)) and a C
+compiler (the TLS library used for the SIMBAD lookup has a little C/assembly;
+MSVC Build Tools, Xcode command-line tools, or gcc/clang all work). The same
+command builds both binaries on Windows, macOS and Linux:
 
 ```
 cargo build --release
@@ -112,11 +147,12 @@ Binaries land in `target/release/` as `xisf2png` and `xisf2png-gui`
 (`.exe` on Windows). To build just one: `cargo build --release --bin xisf2png`.
 
 On Linux, the GUI needs two small development packages at build time (it
-loads the real libraries dynamically at run time):
+loads the real libraries dynamically at run time), and the static musl CLI
+build needs `musl-tools`:
 
 ```
-sudo apt install libwayland-dev libxkbcommon-dev      # Debian / Ubuntu
-sudo dnf install wayland-devel libxkbcommon-devel     # Fedora
+sudo apt install libwayland-dev libxkbcommon-dev musl-tools   # Debian / Ubuntu
+sudo dnf install wayland-devel libxkbcommon-devel              # Fedora
 ```
 
 On Windows without the MSVC Build Tools, use the GNU toolchain instead:
@@ -164,10 +200,9 @@ available as workflow artifacts.
 
 ## Dependencies
 
-All pure Rust (no C toolchain needed):
-
 | Crate       | Purpose                                     |
 | ----------- | ------------------------------------------- |
+| `ureq`      | HTTPS client for the SIMBAD lookup (rustls) |
 | `roxmltree` | XISF XML header parsing                     |
 | `base64`    | inline / embedded base64                    |
 | `hex`       | inline / embedded hex                       |

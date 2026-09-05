@@ -9,8 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use image::{DynamicImage, GrayImage, ImageFormat, RgbImage};
 
 use crate::fits;
+use crate::lookup::{self, Resolver};
 use crate::pixels;
-use crate::post::Stamper;
+use crate::post::{Label, Stamper};
 use crate::xisf;
 
 /// Extensions (lower-case) treated as source images in normal mode.
@@ -34,6 +35,10 @@ pub struct Options {
     pub png_only: bool,
     /// A TrueType / OpenType font file for the stamp; `None` = bundled font.
     pub font: Option<PathBuf>,
+    /// Look the object up online (CDS Sesame / SIMBAD) and stamp its proper
+    /// name and catalogue info instead of the bare file name. Only relevant
+    /// when stamping; the file name is the fallback.
+    pub lookup: bool,
 }
 
 impl Options {
@@ -83,6 +88,12 @@ pub struct Progress {
     /// Path relative to the input directory.
     pub rel: PathBuf,
     pub status: FileStatus,
+    /// Title that was stamped on the image, when it differs from the file
+    /// name (i.e. the object was identified online).
+    pub label: Option<String>,
+    /// Something the user should know about this file (e.g. header and file
+    /// name disagree about the object).
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -93,6 +104,15 @@ pub struct Summary {
     pub failed: u32,
     /// True when the run was stopped early via the cancel flag.
     pub cancelled: bool,
+    /// Run-level warnings (e.g. the online lookup was unreachable).
+    pub warnings: Vec<String>,
+}
+
+/// Result of handling one file.
+struct Outcome {
+    written: bool,
+    label: Option<String>,
+    note: Option<String>,
 }
 
 /// Run the whole batch. `report` is called once per file; set `cancel` from
@@ -129,6 +149,7 @@ pub fn run(
         ..Summary::default()
     };
     let output_dir = opts.output_dir();
+    let mut resolver = Resolver::new(opts.lookup && stamper.is_some());
 
     for (i, file) in files.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
@@ -139,44 +160,63 @@ pub fn run(
         let rel = file.strip_prefix(&opts.input_dir).unwrap_or(file);
         let dest = output_dir.join(rel).with_extension("png");
 
-        let status = match process_one(file, &dest, opts, stamper.as_ref()) {
-            Ok(true) => {
-                summary.converted += 1;
-                FileStatus::Ok
-            }
-            Ok(false) => {
-                summary.skipped += 1;
-                FileStatus::Skipped
-            }
-            Err(e) => {
-                summary.failed += 1;
-                FileStatus::Failed(e)
-            }
-        };
+        let (status, label, note) =
+            match process_one(file, &dest, opts, stamper.as_ref(), &mut resolver) {
+                Ok(Outcome {
+                    written: true,
+                    label,
+                    note,
+                }) => {
+                    summary.converted += 1;
+                    (FileStatus::Ok, label, note)
+                }
+                Ok(Outcome { note, .. }) => {
+                    summary.skipped += 1;
+                    (FileStatus::Skipped, None, note)
+                }
+                Err(e) => {
+                    summary.failed += 1;
+                    (FileStatus::Failed(e), None, None)
+                }
+            };
 
         report(&Progress {
             index: i + 1,
             total: files.len(),
             rel: rel.to_path_buf(),
             status,
+            label,
+            note,
         });
+    }
+
+    if let Some(e) = resolver.failure.take() {
+        summary.warnings.push(format!(
+            "Online object lookup unavailable ({e}); file names were stamped instead."
+        ));
     }
 
     Ok(summary)
 }
 
-/// Handle one file. Returns `Ok(true)` if written, `Ok(false)` if skipped.
+/// Handle one file.
 fn process_one(
     src: &Path,
     dest: &Path,
     opts: &Options,
     stamper: Option<&Stamper>,
-) -> Result<bool, String> {
+    resolver: &mut Resolver,
+) -> Result<Outcome, String> {
     let in_place = opts.png_only && is_same_file(src, dest);
     if !in_place && dest.exists() && !opts.overwrite {
-        return Ok(false);
+        return Ok(Outcome {
+            written: false,
+            label: None,
+            note: None,
+        });
     }
 
+    let mut header_object: Option<String> = None;
     let mut img = if opts.png_only {
         image::ImageReader::open(src)
             .and_then(|r| r.decode().map_err(std::io::Error::other))
@@ -188,16 +228,24 @@ fn process_one(
             xisf::read(src)
         }
         .map_err(|e| e.to_string())?;
+        header_object = data.object.clone();
         let image8 = pixels::to_image(&data).map_err(|e| e.to_string())?;
         image8_to_dynamic(image8)?
     };
 
+    let mut label = None;
+    let mut note = None;
     if let Some(stamper) = stamper {
-        let label = dest
+        let stem = dest
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        img = stamper.resize_and_label(img, &label);
+        let id = lookup::identify(resolver, header_object.as_deref(), &stem);
+        if id.label != Label::plain(&stem) {
+            label = Some(id.label.title.clone());
+        }
+        note = id.note;
+        img = stamper.resize_and_label(img, &id.label);
     }
 
     if let Some(parent) = dest.parent() {
@@ -208,7 +256,11 @@ fn process_one(
     img.write_to(&mut w, ImageFormat::Png)
         .map_err(|e| format!("PNG encoding failed: {e}"))?;
 
-    Ok(true)
+    Ok(Outcome {
+        written: true,
+        label,
+        note,
+    })
 }
 
 fn image8_to_dynamic(img: pixels::Image8) -> Result<DynamicImage, String> {

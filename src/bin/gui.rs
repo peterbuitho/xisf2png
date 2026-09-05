@@ -29,7 +29,12 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "xisf2png",
         options,
-        Box::new(|_cc| Ok(Box::new(App::default()))),
+        Box::new(|_cc| {
+            Ok(Box::new(App {
+                lookup: true,
+                ..App::default()
+            }))
+        }),
     )
 }
 
@@ -54,6 +59,7 @@ struct App {
     overwrite: bool,
     resize4k: bool,
     png_only: bool,
+    lookup: bool,
     font_file: String,
 
     // Run state
@@ -78,6 +84,7 @@ impl App {
             resize4k: self.resize4k,
             png_only: self.png_only,
             font: (!font.is_empty()).then(|| PathBuf::from(font)),
+            lookup: self.lookup,
         }
     }
 
@@ -231,8 +238,21 @@ impl eframe::App for App {
                         !self.png_only,
                         egui::Checkbox::new(
                             &mut self.resize4k,
-                            "Resize to 3840×2160 and stamp file name",
+                            "Resize to 3840×2160 and stamp object name",
                         ),
+                    );
+                    ui.add_enabled(
+                        self.resize4k || self.png_only,
+                        egui::Checkbox::new(
+                            &mut self.lookup,
+                            "Look up object names online (CDS / SIMBAD)",
+                        ),
+                    )
+                    .on_hover_text(
+                        "Identify the target from the header OBJECT keyword and/or a \
+                         catalogue id in the file name (M31, NGC_7000, Sh2-155…) and stamp \
+                         its proper name, other catalogue ids, type and coordinates. \
+                         Falls back to the file name when nothing is found or offline.",
                     );
                 });
             });
@@ -291,6 +311,11 @@ impl eframe::App for App {
                     }
                 }
             });
+            if let Some(s) = &self.summary {
+                for w in &s.warnings {
+                    ui.colored_label(Color32::from_rgb(235, 180, 90), format!("⚠ {w}"));
+                }
+            }
 
             ui.add_space(6.0);
             ui.separator();
@@ -315,7 +340,24 @@ impl eframe::App for App {
                                 line.push_str(e);
                             }
                             ui.label(RichText::new(line).text_style(mono.clone()));
+                            if let Some(label) = &p.label {
+                                ui.label(
+                                    RichText::new(format!("→ {label}"))
+                                        .text_style(mono.clone())
+                                        .color(Color32::from_rgb(140, 190, 255)),
+                                );
+                            }
                         });
+                        if let Some(note) = &p.note {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("     ").text_style(mono.clone()));
+                                ui.label(
+                                    RichText::new(format!("note: {note}"))
+                                        .text_style(mono.clone())
+                                        .color(Color32::from_rgb(235, 180, 90)),
+                                );
+                            });
+                        }
                     }
                 });
         });

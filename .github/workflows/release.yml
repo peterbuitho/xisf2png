@@ -50,11 +50,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Linux build dependencies (GUI)
+      - name: Linux build dependencies
         if: runner.os == 'Linux'
+        # libwayland/libxkbcommon: GUI. musl-tools: C compiler wrapper for the
+        # static CLI build (the TLS stack's `ring` crate has a little C/asm).
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwayland-dev libxkbcommon-dev
+          sudo apt-get install -y --no-install-recommends libwayland-dev libxkbcommon-dev musl-tools
 
       - uses: dtolnay/rust-toolchain@stable
         with:

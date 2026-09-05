@@ -17,13 +17,36 @@ fn main() -> ExitCode {
     let mut overwrite = false;
     let mut resize4k = false;
     let mut png_only = false;
+    let mut font: Option<String> = None;
 
-    for a in &args {
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
         match a.as_str() {
             "--recursive" | "-r" => recursive = true,
             "--overwrite" => overwrite = true,
             "--resize4k" | "-resize4k" => resize4k = true,
             "--png-only" => png_only = true,
+            "--font" => {
+                i += 1;
+                match args.get(i) {
+                    Some(f) if !f.is_empty() => font = Some(f.clone()),
+                    _ => {
+                        eprintln!("--font requires a font name");
+                        usage();
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            _ if a.starts_with("--font=") => {
+                let f = &a["--font=".len()..];
+                if f.is_empty() {
+                    eprintln!("--font requires a font name");
+                    usage();
+                    return ExitCode::from(2);
+                }
+                font = Some(f.to_string());
+            }
             "--help" | "-h" | "/?" => {
                 usage();
                 return ExitCode::SUCCESS;
@@ -45,12 +68,11 @@ fn main() -> ExitCode {
                 }
             }
         }
+        i += 1;
     }
 
-    let Some(input_dir) = input_dir else {
-        usage();
-        return ExitCode::from(2);
-    };
+    // No input folder given: work on the current directory.
+    let input_dir = input_dir.unwrap_or_else(|| ".".to_string());
     // --png-only exists purely to run the 4K post-processing on PNGs that
     // already exist, so it implies --resize4k.
     if png_only {
@@ -86,13 +108,12 @@ fn main() -> ExitCode {
 
     let (mut converted, mut skipped, mut failed) = (0u32, 0u32, 0u32);
     let mut warnings: Vec<String> = Vec::new();
-    // Set to false after a "program not found" error so we don't retry per file.
-    let mut magick_available = true;
+    let mut magick = Magick::new(font);
 
     for file in &files {
         // In --png-only mode ImageMagick does all the work, so once it is
         // known to be missing there is nothing useful left to do.
-        if png_only && !magick_available {
+        if png_only && !magick.available() {
             break;
         }
 
@@ -110,8 +131,8 @@ fn main() -> ExitCode {
             Ok(Outcome::Converted) => {
                 println!("OK    {rel_display}");
                 converted += 1;
-                if resize4k && magick_available {
-                    resize_and_label(&dest, &mut warnings, &mut magick_available);
+                if resize4k && magick.available() {
+                    magick.resize_and_label(&dest, &mut warnings);
                 }
             }
             Ok(Outcome::Skipped) => {
@@ -176,51 +197,118 @@ enum Outcome {
     Skipped,
 }
 
-/// Post-process a freshly written PNG with ImageMagick: scale (up or down,
-/// aspect ratio kept) to cover 3840x2160, center-crop the overflow so the
-/// result is exactly 3840x2160, and stamp the file name in the bottom-right
-/// corner. Failures are collected as warnings so the batch keeps going; a
-/// missing `magick` binary disables further attempts.
-fn resize_and_label(dest: &Path, warnings: &mut Vec<String>, magick_available: &mut bool) {
-    let label = dest
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
+/// ImageMagick command names to try, in order. ImageMagick 7 installs
+/// `magick` (Windows installer, Homebrew, most modern distros); ImageMagick 6,
+/// still shipped by Debian/Ubuntu, only has `convert`. The CLI syntax we use
+/// is identical on both.
+///
+/// `convert` is deliberately not tried on Windows: `C:\Windows\System32\convert.exe`
+/// is an unrelated filesystem tool that would be picked up instead.
+#[cfg(windows)]
+const MAGICK_COMMANDS: &[&str] = &["magick"];
+#[cfg(not(windows))]
+const MAGICK_COMMANDS: &[&str] = &["magick", "convert"];
 
-    let result = std::process::Command::new("magick")
-        .arg(dest)
-        .args(["-resize", "3840x2160^"])
-        .args(["-gravity", "center"])
-        .args(["-extent", "3840x2160"])
-        .args(["-font", "Franklin-Gothic-Medium-Cond"])
-        .args(["-pointsize", "48"])
-        .args(["-gravity", "southeast"])
-        .args(["-fill", "white"])
-        .args(["-annotate", "+60+120"])
-        .arg(&label)
-        .arg(dest)
-        .output();
+/// Wraps the ImageMagick post-processing step and remembers which command
+/// works so a missing binary is only probed once, not once per file.
+struct Magick {
+    /// Index into `MAGICK_COMMANDS` of the command to use; `None` once every
+    /// candidate has been found missing.
+    cmd: Option<usize>,
+    /// Font name passed to ImageMagick, or `None` to use its default.
+    font: Option<String>,
+}
 
-    match result {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            warnings.push(format!(
-                "ImageMagick failed on {}: {}",
-                dest.display(),
-                stderr.trim().lines().next().unwrap_or("unknown error")
-            ));
+impl Magick {
+    fn new(font: Option<String>) -> Self {
+        Magick {
+            cmd: Some(0),
+            font,
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            *magick_available = false;
-            warnings.push(
-                "ImageMagick ('magick') not found on PATH - PNGs were not \
-                 resized/labelled."
-                    .into(),
-            );
-        }
-        Err(e) => {
-            warnings.push(format!("Could not run ImageMagick on {}: {e}", dest.display()));
+    }
+
+    fn available(&self) -> bool {
+        self.cmd.is_some()
+    }
+
+    /// Post-process a PNG in place: scale (up or down, aspect ratio kept) to
+    /// cover 3840x2160, center-crop the overflow so the result is exactly
+    /// 3840x2160, and stamp the file name in the bottom-right corner.
+    /// Failures are collected as warnings so the batch keeps going; if no
+    /// ImageMagick binary can be found, further attempts are disabled.
+    fn resize_and_label(&mut self, dest: &Path, warnings: &mut Vec<String>) {
+        let label = dest
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        loop {
+            let Some(idx) = self.cmd else { return };
+            let program = MAGICK_COMMANDS[idx];
+
+            let mut command = std::process::Command::new(program);
+            command
+                .arg(dest)
+                .args(["-resize", "3840x2160^"])
+                .args(["-gravity", "center"])
+                .args(["-extent", "3840x2160"]);
+            if let Some(font) = &self.font {
+                command.args(["-font", font]);
+            }
+            command
+                .args(["-pointsize", "48"])
+                .args(["-gravity", "southeast"])
+                .args(["-fill", "white"])
+                .args(["-annotate", "+60+120"])
+                .arg(&label)
+                .arg(dest);
+
+            match command.output() {
+                Ok(out) if out.status.success() => {
+                    // ImageMagick still exits 0 on a non-fatal problem such as
+                    // an unknown --font (it silently falls back to its default),
+                    // reporting it only on stderr. Surface it once, not per file.
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    if let Some(line) = stderr.trim().lines().next() {
+                        let w = format!("ImageMagick: {line}");
+                        if !warnings.contains(&w) {
+                            warnings.push(w);
+                        }
+                    }
+                    return;
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    warnings.push(format!(
+                        "ImageMagick failed on {}: {}",
+                        dest.display(),
+                        stderr.trim().lines().next().unwrap_or("unknown error")
+                    ));
+                    return;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Try the next candidate command; give up when none are left.
+                    let next = idx + 1;
+                    if next < MAGICK_COMMANDS.len() {
+                        self.cmd = Some(next);
+                        continue;
+                    }
+                    self.cmd = None;
+                    warnings.push(format!(
+                        "ImageMagick not found on PATH (tried {}) - PNGs were not \
+                         resized/labelled.",
+                        MAGICK_COMMANDS.join(", ")
+                    ));
+                    return;
+                }
+                Err(e) => {
+                    warnings.push(format!(
+                        "Could not run ImageMagick on {}: {e}",
+                        dest.display()
+                    ));
+                    return;
+                }
+            }
         }
     }
 }
@@ -292,19 +380,24 @@ fn usage() {
     eprintln!(
         "xisf2png - batch convert XISF astronomical images to PNG\n\n\
          Usage:\n\
-         \x20 xisf2png <input_dir> [output_dir] [--recursive|-r] [--overwrite] [--resize4k]\n\
-         \x20 xisf2png <input_dir> [output_dir] --png-only [--recursive|-r] [--overwrite]\n\n\
+         \x20 xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k]\n\
+         \x20 xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite]\n\n\
+         If input_dir is omitted, the current folder is used.\n\
          If output_dir is omitted, PNGs are written next to their source files.\n\n\
          Options:\n\
          \x20 -r, --recursive   recurse into subfolders (output mirrors structure)\n\
          \x20     --overwrite    overwrite existing .png files (default: skip)\n\
          \x20     --resize4k     scale each PNG to exactly 3840x2160 (aspect kept,\n\
          \x20                    center-cropped, no padding) and stamp the file\n\
-         \x20                    name bottom-right (requires ImageMagick on PATH)\n\
+         \x20                    name bottom-right (requires ImageMagick on PATH:\n\
+         \x20                    'magick' or, for ImageMagick 6, 'convert')\n\
          \x20     --png-only     skip XISF conversion: take existing .png files in\n\
          \x20                    input_dir and only resize/annotate them (implies\n\
          \x20                    --resize4k). Edited in place when output_dir is\n\
          \x20                    omitted, otherwise copied there first.\n\
+         \x20     --font <name>  font for the file-name stamp, as ImageMagick knows\n\
+         \x20                    it (see 'magick -list font'). Default: ImageMagick's\n\
+         \x20                    standard font. Also accepts --font=<name>.\n\
          \x20 -h, --help        show this help"
     );
 }

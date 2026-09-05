@@ -21,3 +21,4 @@ png = "0.17"
 lto = true
 codegen-units = 1
 panic = "abort"
+strip = true

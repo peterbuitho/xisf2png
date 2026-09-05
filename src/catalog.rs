@@ -168,6 +168,8 @@ pub const POPULAR_NAMES: &[(&str, &str)] = &[
     ("M 62", "Flickering Globular Cluster"),
     ("M 63", "Sunflower Galaxy"),
     ("M 64", "Black Eye Galaxy"),
+    ("M 65", "Leo Triplet"),
+    ("M 66", "Leo Triplet"),
     ("M 67", "Golden Eye Cluster"), // also "King Cobra Cluster"
     ("M 71", "Angelfish Cluster"),
     ("M 74", "Phantom Galaxy"),
@@ -219,12 +221,14 @@ pub const POPULAR_NAMES: &[(&str, &str)] = &[
     ("NGC 6357", "Lobster Nebula"),
     ("NGC 6369", "Little Ghost Nebula"),
     ("NGC 6537", "Red Spider Nebula"),
+    ("NGC 6572", "Blue Racquetball Nebula"),
     ("NGC 6751", "Glowing Eye Nebula"),
     ("NGC 6818", "Little Gem Nebula"),
     ("NGC 6905", "Blue Flash Nebula"),
     ("NGC 6979", "Pickering's Triangle"),
     ("NGC 6995", "Bat Nebula"),
     ("NGC 7008", "Fetus Nebula"),
+    ("NGC 7027", "Jewel Bug Nebula"),
     ("NGC 7380", "Wizard Nebula"),
     ("IC 63", "Ghost of Cassiopeia"),
     ("IC 410", "Tadpoles Nebula"),
@@ -237,6 +241,7 @@ pub const POPULAR_NAMES: &[(&str, &str)] = &[
     ("IC 1848", "Soul Nebula"),
     ("IC 2118", "Witch Head Nebula"),
     ("IC 2177", "Seagull Nebula"),
+    ("IC 4406", "Retina Nebula"),
     ("IC 4592", "Blue Horsehead Nebula"),
     ("IC 4604", "Rho Ophiuchi Nebula"),
     ("IC 4628", "Prawn Nebula"),
@@ -283,6 +288,7 @@ pub const POPULAR_NAMES: &[(&str, &str)] = &[
     ("NGC 2841", "Tiger's Eye Galaxy"),
     ("NGC 3184", "Little Pinwheel Galaxy"),
     ("NGC 3344", "Sliced Onion Galaxy"),
+    ("NGC 3521", "Bubble Galaxy"),
     ("NGC 3628", "Hamburger Galaxy"),
     ("NGC 4438", "Eyes Galaxies"),
     ("NGC 4490", "Cocoon Galaxy"),
@@ -433,6 +439,12 @@ mod tests {
         assert_eq!(popular_name(&["NGC 2682".into(), "M 67".into()]).as_deref(), Some("Golden Eye Cluster"));
         assert_eq!(popular_name(&["NGC 1491".into()]).as_deref(), Some("Fossil Footprint Nebula"));
         assert_eq!(popular_name(&["NGC 1333".into()]).as_deref(), Some("Embryo Nebula"));
+        assert_eq!(popular_name(&["NGC 3521".into()]).as_deref(), Some("Bubble Galaxy"));
+        assert_eq!(popular_name(&["NGC 6572".into()]).as_deref(), Some("Blue Racquetball Nebula"));
+        assert_eq!(popular_name(&["NGC 7027".into()]).as_deref(), Some("Jewel Bug Nebula"));
+        assert_eq!(popular_name(&["IC 4406".into()]).as_deref(), Some("Retina Nebula"));
+        assert_eq!(popular_name(&["M 65".into()]).as_deref(), Some("Leo Triplet"));
+        assert_eq!(popular_name(&["M 66".into()]).as_deref(), Some("Leo Triplet"));
         assert_eq!(popular_name(&["SH 2-206".into()]).as_deref(), Some("Fossil Footprint Nebula"));
         // Every table entry must be in canonical pretty form so it matches.
         for (d, _) in POPULAR_NAMES {

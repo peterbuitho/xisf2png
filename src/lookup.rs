@@ -30,6 +30,22 @@ const DSO_TYPES: &[&str] = &[
     "GlC", "Cl*", "As*", "SFR", "glb",
 ];
 
+/// Nebula types: what astrophotographers actually mean when they point at a
+/// cluster embedded in one (NGC 7380 = the Wizard Nebula, NGC 2244 = the
+/// Rosette). SIMBAD files the cluster and the nebula as separate objects.
+const NEBULA_TYPES: &[&str] = &[
+    "HII", "RNe", "DNe", "GNe", "MoC", "Cld", "ISM", "EmO", "bub", "SNR", "SFR", "PN",
+];
+
+/// Objects whose SIMBAD entry may be "the cluster" while the picture is of the
+/// surrounding nebula: worth looking for a named companion nebula.
+const COMPANION_HOST_TYPES: &[&str] = &[
+    "OpC", "Cl*", "As*", "SFR", "HII", "GNe", "ISM", "Cld", "MoC", "EmO", "RNe", "DNe",
+];
+
+/// How far a companion nebula's catalogue position may sit from the cluster's.
+const COMPANION_RADIUS_DEG: f64 = 0.5;
+
 /// Catalogues we recognise in file names and prefer when presenting aliases.
 /// Order = display priority.
 struct Catalog {
@@ -204,14 +220,23 @@ impl Resolver {
     /// or `None` if there is nothing with a recognised catalogue id or a
     /// common name there.
     pub fn nearby(&mut self, ra_deg: f64, dec_deg: f64, radius_deg: f64) -> Option<&ObjectInfo> {
+        self.cone(ra_deg, dec_deg, radius_deg, ConeKind::AnyDso)
+    }
+
+    /// The most prominent *named* nebula within `radius_deg` of a position.
+    pub fn nearby_named_nebula(&mut self, ra_deg: f64, dec_deg: f64, radius_deg: f64) -> Option<&ObjectInfo> {
+        self.cone(ra_deg, dec_deg, radius_deg, ConeKind::NamedNebula)
+    }
+
+    fn cone(&mut self, ra_deg: f64, dec_deg: f64, radius_deg: f64, kind: ConeKind) -> Option<&ObjectInfo> {
         if !self.enabled() {
             return None;
         }
         // 0.01 deg ~ 36" buckets: frames of one target share a lookup.
-        let key = format!("{:.2}|{:.2}|{:.2}", ra_deg, dec_deg, radius_deg);
+        let key = format!("{kind:?}|{ra_deg:.2}|{dec_deg:.2}|{radius_deg:.2}");
         if !self.nearby_cache.contains_key(&key) {
             let agent = self.agent.as_ref()?;
-            match cone_search(agent, ra_deg, dec_deg, radius_deg) {
+            match cone_search(agent, ra_deg, dec_deg, radius_deg, kind) {
                 Ok(info) => {
                     self.nearby_cache.insert(key.clone(), info);
                 }
@@ -222,6 +247,32 @@ impl Resolver {
             }
         }
         self.nearby_cache.get(&key).and_then(|o| o.as_ref())
+    }
+
+    /// If `info` is a cluster/nebula without a common name, borrow the name
+    /// (and ids, and type) of the named nebula it sits in, if SIMBAD has one
+    /// at the same position. "NGC 7380" becomes "Wizard Nebula (NGC 7380)".
+    fn adopt_companion_nebula(&mut self, info: &mut ObjectInfo) {
+        if info.common_name.is_some() || !COMPANION_HOST_TYPES.contains(&info.otype.trim_end_matches('?')) {
+            return;
+        }
+        let (Some(ra), Some(dec)) = (info.ra_deg, info.dec_deg) else {
+            return;
+        };
+        let Some(neb) = self.nearby_named_nebula(ra, dec, COMPANION_RADIUS_DEG).cloned() else {
+            return;
+        };
+        if neb.same_object(info) {
+            return;
+        }
+        info.common_name = neb.common_name;
+        for d in neb.designations {
+            if !info.designations.contains(&d) {
+                info.designations.push(d);
+            }
+        }
+        info.aliases_norm.extend(neb.aliases_norm);
+        info.otype = neb.otype;
     }
 
     pub fn enabled(&self) -> bool {
@@ -267,19 +318,35 @@ fn fetch(agent: &ureq::Agent, query: &str) -> Result<Option<ObjectInfo>, String>
     parse_sesame(&body)
 }
 
-/// SIMBAD TAP cone search for deep-sky objects, ranked by prominence.
-fn cone_search(agent: &ureq::Agent, ra: f64, dec: f64, radius: f64) -> Result<Option<ObjectInfo>, String> {
-    let types = DSO_TYPES
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConeKind {
+    /// Any deep-sky object with a recognised catalogue id or a common name.
+    AnyDso,
+    /// Nebulae that have a common ("NAME ...") alias.
+    NamedNebula,
+}
+
+/// SIMBAD TAP cone search, ranked by prominence.
+fn cone_search(agent: &ureq::Agent, ra: f64, dec: f64, radius: f64, kind: ConeKind) -> Result<Option<ObjectInfo>, String> {
+    let type_list = match kind {
+        ConeKind::AnyDso => DSO_TYPES,
+        ConeKind::NamedNebula => NEBULA_TYPES,
+    };
+    let types = type_list
         .iter()
         .map(|t| format!("'{t}'"))
         .collect::<Vec<_>>()
         .join(",");
+    let name_filter = match kind {
+        ConeKind::AnyDso => "",
+        ConeKind::NamedNebula => " AND i.ids LIKE '%NAME %'",
+    };
     let adql = format!(
         "SELECT TOP 400 b.main_id, b.otype, b.ra, b.dec, \
          DISTANCE(POINT('ICRS', b.ra, b.dec), POINT('ICRS', {ra:.6}, {dec:.6})) AS d, i.ids \
          FROM basic AS b JOIN ids AS i ON i.oidref = b.oid \
          WHERE CONTAINS(POINT('ICRS', b.ra, b.dec), CIRCLE('ICRS', {ra:.6}, {dec:.6}, {radius:.4})) = 1 \
-         AND b.otype IN ({types}) ORDER BY d ASC"
+         AND b.otype IN ({types}){name_filter} ORDER BY d ASC"
     );
     let url = format!(
         "{TAP_URL}?request=doQuery&lang=adql&format=tsv&query={}",
@@ -293,15 +360,22 @@ fn cone_search(agent: &ureq::Agent, ra: f64, dec: f64, radius: f64) -> Result<Op
         .body_mut()
         .read_to_string()
         .map_err(|e| format!("SIMBAD response unreadable: {e}"))?;
-    Ok(parse_tap_tsv(&body))
+    Ok(pick_from_tap_tsv(&body, kind == ConeKind::NamedNebula))
 }
 
 /// Pick the best hit from a TAP TSV result (columns: main_id, otype, ra, dec,
 /// d, ids). Rows are already distance-sorted; we take the most prominent
 /// tier and, within it, the closest.
-pub fn parse_tap_tsv(tsv: &str) -> Option<ObjectInfo> {
+///
+/// With `require_name` (companion-nebula search) only objects with a clean
+/// common name qualify, and a name ending in a type word ("... Nebula")
+/// beats catalogue prominence: for a cluster inside the Rosette we want
+/// "Rosette Nebula", not the NGC-numbered fragment that happens to be
+/// closest.
+pub fn pick_from_tap_tsv(tsv: &str, require_name: bool) -> Option<ObjectInfo> {
     let unquote = |s: &str| s.trim().trim_matches('"').to_string();
-    let mut best: Option<(usize, ObjectInfo)> = None;
+    // rank = (0 if name ends in a type word else 1 [named mode only], tier)
+    let mut best: Option<((u8, usize), ObjectInfo)> = None;
     for line in tsv.lines().skip(1) {
         let cols: Vec<&str> = line.split('\t').collect();
         if cols.len() < 6 {
@@ -318,10 +392,18 @@ pub fn parse_tap_tsv(tsv: &str) -> Option<ObjectInfo> {
         if tier == usize::MAX {
             continue;
         }
-        // Rows come closest-first, so only a strictly better tier replaces.
-        if best.as_ref().is_none_or(|(t, _)| tier < *t) {
-            let done = tier == 0;
-            best = Some((tier, info));
+        let rank = if require_name {
+            let Some(name) = info.common_name.as_deref().filter(|n| is_clean_name(n)) else {
+                continue;
+            };
+            (u8::from(!ends_with_type_word(name)), tier)
+        } else {
+            (0, tier)
+        };
+        // Rows come closest-first, so only a strictly better rank replaces.
+        if best.as_ref().is_none_or(|(r, _)| rank < *r) {
+            let done = rank == (0, 0);
+            best = Some((rank, info));
             if done {
                 break;
             }
@@ -384,11 +466,6 @@ fn catalog_designation(cat: &Catalog, alias: &str) -> Option<String> {
 /// prefer a mixed-case one ending in a type word, skip abbreviations and
 /// shouting.
 fn pick_common_name(aliases: &[String]) -> Option<String> {
-    const TYPE_WORDS: &[&str] = &[
-        "nebula", "galaxy", "cluster", "cloud", "remnant", "loop", "complex", "star", "group",
-        "association", "region", "filament", "chain", "triplet", "quintet", "sextet", "arc",
-        "wall", "bubble", "shell", "ring", "pair", "stream", "dwarf",
-    ];
     const CONSTELLATION_ABBR: &[&str] = &[
         "And", "Ant", "Aps", "Aqr", "Aql", "Ara", "Ari", "Aur", "Boo", "Cae", "Cam", "Cnc", "CVn",
         "CMa", "CMi", "Cap", "Car", "Cas", "Cen", "Cep", "Cet", "Cha", "Cir", "Col", "Com", "CrA",
@@ -420,26 +497,55 @@ fn pick_common_name(aliases: &[String]) -> Option<String> {
             CONSTELLATION_ABBR.contains(&w) || OTHER_ABBR.contains(&w)
         })
     };
-    let has_type_word = |n: &str| {
-        n.split_whitespace()
-            .last()
-            .map(|w| TYPE_WORDS.contains(&w.to_ascii_lowercase().as_str()))
-            .unwrap_or(false)
-    };
 
-    let clean: Vec<&str> = names
+    // Catalogue-ish "names" (digits, lone capitals) are never used: better no
+    // common name, so a companion nebula's can be adopted, than
+    // "AFGL 333 Cloud (IC 1805)".
+    let candidates: Vec<&str> = names.iter().copied().filter(|n| is_clean_name(n)).collect();
+    let nice: Vec<&str> = candidates
         .iter()
         .copied()
         .filter(|n| !is_shouting(n) && !has_abbreviation(n))
         .collect();
 
-    clean
-        .iter()
+    nice.iter()
         .copied()
-        .find(|n| has_type_word(n))
-        .or_else(|| clean.first().copied())
-        .or_else(|| names.first().copied())
+        .find(|n| ends_with_type_word(n))
+        .or_else(|| nice.first().copied())
+        .or_else(|| candidates.first().copied())
         .map(|s| s.to_string())
+}
+
+/// Words a real common name tends to end with.
+const TYPE_WORDS: &[&str] = &[
+    "nebula", "galaxy", "cluster", "cloud", "remnant", "loop", "complex", "star", "group",
+    "association", "region", "filament", "chain", "triplet", "quintet", "sextet", "arc",
+    "wall", "bubble", "shell", "ring", "pair", "stream", "dwarf",
+];
+
+pub(crate) fn ends_with_type_word(name: &str) -> bool {
+    name.split_whitespace()
+        .last()
+        .map(|w| TYPE_WORDS.contains(&w.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// A "NAME ..." alias that reads like a proper name rather than a catalogue
+/// entry in disguise: "Wizard Nebula" yes; "AFGL 333 Cloud", "Rosette B",
+/// "Lo 2", "NIPSS 1548C27 IRS 1" no (digits, or a lone capital letter).
+pub(crate) fn is_clean_name(name: &str) -> bool {
+    let mut words = 0;
+    for w in name.split_whitespace() {
+        words += 1;
+        if w.chars().any(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        let alnum: Vec<char> = w.chars().filter(|c| c.is_alphanumeric()).collect();
+        if alnum.len() == 1 && alnum[0].is_uppercase() {
+            return false;
+        }
+    }
+    words > 0
 }
 
 /// Find the first catalogue designation in a file name stem, e.g.
@@ -541,7 +647,10 @@ pub fn identify(
         .map(|s| s.trim_matches('\'').trim())
         .filter(|s| !s.is_empty());
 
-    let named = identify_by_name(resolver, header, file_desig.as_deref());
+    let mut named = identify_by_name(resolver, header, file_desig.as_deref());
+    if let Some(n) = named.as_mut() {
+        resolver.adopt_companion_nebula(&mut n.info);
+    }
 
     // --- Coordinates: validate the name, or identify an unnamed frame ------
     if let Some(c) = coords {
@@ -568,7 +677,8 @@ pub fn identify(
                     .preferred
                     .clone()
                     .unwrap_or_else(|| named.info.main_id.clone());
-                if let Some(actual) = resolver.nearby(c.ra_deg, c.dec_deg, c.search_radius_deg()).cloned() {
+                if let Some(mut actual) = resolver.nearby(c.ra_deg, c.dec_deg, c.search_radius_deg()).cloned() {
+                    resolver.adopt_companion_nebula(&mut actual);
                     if !actual.same_object(&named.info) && actual.is_notable() {
                         return Identification {
                             label: compose(&actual, None),
@@ -592,7 +702,8 @@ pub fn identify(
                 };
             }
             None => {
-                if let Some(actual) = resolver.nearby(c.ra_deg, c.dec_deg, c.search_radius_deg()).cloned() {
+                if let Some(mut actual) = resolver.nearby(c.ra_deg, c.dec_deg, c.search_radius_deg()).cloned() {
+                    resolver.adopt_companion_nebula(&mut actual);
                     let where_from = if c.solved { "plate solution" } else { "header coordinates" };
                     return Identification {
                         label: compose(&actual, None),
@@ -957,13 +1068,54 @@ mod tests {
             \"Ford M 31 574\"\t\"PN\"\t10.6873\t41.2678\t0.0022\t\"Ford M 31 574|[B2015] M31 B127-33\"\n\
             \"NGC  206\"\t\"Cl*\"\t10.10\t40.73\t0.7\t\"NGC   206|OB 78\"\n\
             \"M  31\"\t\"AGN\"\t10.6847\t41.2687\t0.9\t\"NAME Andromeda Galaxy|M  31|NGC   224|UGC   454\"\n";
-        let best = parse_tap_tsv(tsv).unwrap();
+        let best = pick_from_tap_tsv(tsv, false).unwrap();
         assert_eq!(best.main_id, "M 31");
         assert_eq!(best.designations[0], "M 31");
         assert_eq!(best.common_name.as_deref(), Some("Andromeda Galaxy"));
 
         // Only obscure objects -> nothing worth stamping.
         let tsv = "main_id\totype\tra\tdec\td\tids\n\"[PSC2013] 9\"\t\"PN\"\t1\t2\t0.1\t\"[PSC2013] 9\"\n";
-        assert!(parse_tap_tsv(tsv).is_none());
+        assert!(pick_from_tap_tsv(tsv, false).is_none());
+
+        // Named-nebula mode skips unnamed objects even if they are prominent,
+        // rejects catalogue-ish "names", and prefers "... Nebula" over a
+        // closer NGC-numbered fragment.
+        let tsv = "main_id\totype\tra\tdec\td\tids\n\
+            \"LBN 511\"\t\"HII\"\t1\t2\t0.01\t\"LBN 511\"\n\
+            \"AFGL 333\"\t\"MoC\"\t1\t2\t0.015\t\"NAME AFGL 333 Cloud|AFGL 333\"\n\
+            \"NGC  2238\"\t\"HII\"\t1\t2\t0.02\t\"NAME Rosette B|NGC  2238\"\n\
+            \"SH  2-142\"\t\"HII\"\t1\t2\t0.03\t\"NAME Wizard Nebula|LBN 511|SH 2-142\"\n";
+        let neb = pick_from_tap_tsv(tsv, true).unwrap();
+        assert_eq!(neb.common_name.as_deref(), Some("Wizard Nebula"));
+        assert_eq!(neb.designations, vec!["Sh2-142", "LBN 511"]);
+
+        assert!(is_clean_name("Wizard Nebula"));
+        assert!(is_clean_name("h Persei Cluster"));
+        assert!(is_clean_name("Barnard's Loop"));
+        assert!(!is_clean_name("AFGL 333 Cloud"));
+        assert!(!is_clean_name("Rosette B"));
+        assert!(!is_clean_name("Lo 2"));
+        assert!(!is_clean_name("NIPSS 1548C27 IRS 1"));
+    }
+
+    /// Talks to SIMBAD. Run with: cargo test --lib live_simbad -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn live_simbad() {
+        let mut r = Resolver::new(true);
+        for name in ["IC 1805", "NGC 7380", "NGC 2244", "M 31"] {
+            let mut info = r.resolve(name).cloned().expect("resolves");
+            println!(
+                "{name}: main_id={} otype={} pos=({:?},{:?}) name={:?}",
+                info.main_id, info.otype, info.ra_deg, info.dec_deg, info.common_name
+            );
+            if let (Some(ra), Some(dec)) = (info.ra_deg, info.dec_deg) {
+                let neb = r.nearby_named_nebula(ra, dec, COMPANION_RADIUS_DEG).cloned();
+                println!("   companion: {:?}", neb.as_ref().map(|n| (&n.main_id, &n.common_name, &n.otype)));
+            }
+            r.adopt_companion_nebula(&mut info);
+            println!("   -> title: {}", compose(&info, Some(name)).title);
+            assert!(r.failure.is_none(), "network: {:?}", r.failure);
+        }
     }
 }

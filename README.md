@@ -116,6 +116,10 @@ gives "Pleiades (M 45)"). The rules:
   frame is identified from its coordinates alone, same prominence rule.
 - Nothing resolves, or you are offline → the plain file name is stamped as
   before.
+- SIMBAD files a cluster and the nebula around it as separate objects
+  (NGC 7380 is "an open cluster"; the Wizard Nebula is Sh2-142). When the
+  resolved object is a cluster or nebula without a common name, the named
+  nebula at the same position is adopted, giving "Wizard Nebula (NGC 7380)".
 
 Each distinct name or position is looked up once per run, so a folder of 300
 subs of one target costs one or two requests. `--no-lookup` disables all of

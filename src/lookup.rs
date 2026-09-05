@@ -17,8 +17,18 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use crate::post::Label;
+use crate::wcs::SkyCoords;
 
 const SESAME_URL: &str = "https://cds.unistra.fr/cgi-bin/nph-sesame/-oxI/S?";
+const TAP_URL: &str = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync";
+
+/// SIMBAD object types worth stamping when identifying a frame by its
+/// coordinates: deep-sky objects, not the thousands of stars in any field.
+const DSO_TYPES: &[&str] = &[
+    "G", "AGN", "GiG", "GiP", "GiC", "IG", "PaG", "GrG", "ClG", "SBG", "EmG", "LIN", "SyG", "Sy1",
+    "Sy2", "HII", "PN", "SNR", "RNe", "DNe", "GNe", "MoC", "Cld", "ISM", "EmO", "bub", "OpC",
+    "GlC", "Cl*", "As*", "SFR", "glb",
+];
 
 /// Catalogues we recognise in file names and prefer when presenting aliases.
 /// Order = display priority.
@@ -80,6 +90,70 @@ impl ObjectInfo {
         self.aliases_norm.contains(&normalize(designation))
     }
 
+    /// Do the two records describe the same object (share any identifier)?
+    pub fn same_object(&self, other: &ObjectInfo) -> bool {
+        self.aliases_norm.intersection(&other.aliases_norm).next().is_some()
+    }
+
+    /// Notable enough to override a name the user gave: Messier, NGC, IC,
+    /// Sharpless or Barnard, or anything with a common name. An LBN/LDN entry
+    /// near the pointing position is not evidence the user mislabelled the
+    /// image.
+    fn is_notable(&self) -> bool {
+        self.prominence() <= 4 || self.common_name.is_some()
+    }
+
+    /// Prominence tier for ranking cone-search hits: 0 = Messier ... n =
+    /// lesser catalogues, then "has a common name", then obscure.
+    fn prominence(&self) -> usize {
+        for (tier, cat) in CATALOGS.iter().enumerate() {
+            if self.designations.iter().any(|d| d.starts_with(cat.pretty)) {
+                return tier;
+            }
+        }
+        if self.common_name.is_some() {
+            return CATALOGS.len();
+        }
+        usize::MAX
+    }
+
+    /// Build from a SIMBAD TAP row: main_id, '|'-separated ids, otype, ra, dec.
+    fn from_tap(main_id: &str, ids: &str, otype: &str, ra: Option<f64>, dec: Option<f64>) -> ObjectInfo {
+        let main_id = collapse_ws(main_id);
+        let main_id = main_id.strip_prefix("NAME ").map(str::to_string).unwrap_or(main_id);
+        let aliases: Vec<String> = ids
+            .split('|')
+            .map(collapse_ws)
+            .filter(|s| !s.is_empty())
+            .chain(std::iter::once(main_id.clone()))
+            .collect();
+        ObjectInfo::from_aliases(main_id, aliases, otype.trim().to_string(), ra, dec)
+    }
+
+    fn from_aliases(main_id: String, aliases: Vec<String>, otype: String, ra_deg: Option<f64>, dec_deg: Option<f64>) -> ObjectInfo {
+        let common_name = pick_common_name(&aliases);
+        let mut designations = Vec::new();
+        for cat in CATALOGS {
+            for alias in &aliases {
+                if let Some(d) = catalog_designation(cat, alias) {
+                    if !designations.contains(&d) {
+                        designations.push(d);
+                    }
+                }
+            }
+        }
+        let aliases_norm = aliases.iter().map(|a| normalize(a)).collect();
+        ObjectInfo {
+            main_id,
+            common_name,
+            designations,
+            aliases_norm,
+            otype,
+            ra_deg,
+            dec_deg,
+        }
+    }
+
     pub fn type_description(&self) -> String {
         otype_description(&self.otype).to_string()
     }
@@ -99,6 +173,8 @@ pub struct Resolver {
     enabled: bool,
     agent: Option<ureq::Agent>,
     cache: HashMap<String, Option<ObjectInfo>>,
+    /// Cone-search results keyed by rounded position + radius.
+    nearby_cache: HashMap<String, Option<ObjectInfo>>,
     /// Set (and lookups disabled) after the first network failure.
     pub failure: Option<String>,
 }
@@ -119,8 +195,33 @@ impl Resolver {
             enabled,
             agent,
             cache: HashMap::new(),
+            nearby_cache: HashMap::new(),
             failure: None,
         }
+    }
+
+    /// The most prominent deep-sky object within `radius_deg` of a position,
+    /// or `None` if there is nothing with a recognised catalogue id or a
+    /// common name there.
+    pub fn nearby(&mut self, ra_deg: f64, dec_deg: f64, radius_deg: f64) -> Option<&ObjectInfo> {
+        if !self.enabled() {
+            return None;
+        }
+        // 0.01 deg ~ 36" buckets: frames of one target share a lookup.
+        let key = format!("{:.2}|{:.2}|{:.2}", ra_deg, dec_deg, radius_deg);
+        if !self.nearby_cache.contains_key(&key) {
+            let agent = self.agent.as_ref()?;
+            match cone_search(agent, ra_deg, dec_deg, radius_deg) {
+                Ok(info) => {
+                    self.nearby_cache.insert(key.clone(), info);
+                }
+                Err(e) => {
+                    self.failure = Some(e);
+                    return None;
+                }
+            }
+        }
+        self.nearby_cache.get(&key).and_then(|o| o.as_ref())
     }
 
     pub fn enabled(&self) -> bool {
@@ -166,6 +267,69 @@ fn fetch(agent: &ureq::Agent, query: &str) -> Result<Option<ObjectInfo>, String>
     parse_sesame(&body)
 }
 
+/// SIMBAD TAP cone search for deep-sky objects, ranked by prominence.
+fn cone_search(agent: &ureq::Agent, ra: f64, dec: f64, radius: f64) -> Result<Option<ObjectInfo>, String> {
+    let types = DSO_TYPES
+        .iter()
+        .map(|t| format!("'{t}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let adql = format!(
+        "SELECT TOP 400 b.main_id, b.otype, b.ra, b.dec, \
+         DISTANCE(POINT('ICRS', b.ra, b.dec), POINT('ICRS', {ra:.6}, {dec:.6})) AS d, i.ids \
+         FROM basic AS b JOIN ids AS i ON i.oidref = b.oid \
+         WHERE CONTAINS(POINT('ICRS', b.ra, b.dec), CIRCLE('ICRS', {ra:.6}, {dec:.6}, {radius:.4})) = 1 \
+         AND b.otype IN ({types}) ORDER BY d ASC"
+    );
+    let url = format!(
+        "{TAP_URL}?request=doQuery&lang=adql&format=tsv&query={}",
+        percent_encode(&adql)
+    );
+    let mut response = agent
+        .get(&url)
+        .call()
+        .map_err(|e| format!("SIMBAD request failed: {e}"))?;
+    let body = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| format!("SIMBAD response unreadable: {e}"))?;
+    Ok(parse_tap_tsv(&body))
+}
+
+/// Pick the best hit from a TAP TSV result (columns: main_id, otype, ra, dec,
+/// d, ids). Rows are already distance-sorted; we take the most prominent
+/// tier and, within it, the closest.
+pub fn parse_tap_tsv(tsv: &str) -> Option<ObjectInfo> {
+    let unquote = |s: &str| s.trim().trim_matches('"').to_string();
+    let mut best: Option<(usize, ObjectInfo)> = None;
+    for line in tsv.lines().skip(1) {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() < 6 {
+            continue;
+        }
+        let info = ObjectInfo::from_tap(
+            &unquote(cols[0]),
+            &unquote(cols[5]),
+            &unquote(cols[1]),
+            cols[2].trim().parse().ok(),
+            cols[3].trim().parse().ok(),
+        );
+        let tier = info.prominence();
+        if tier == usize::MAX {
+            continue;
+        }
+        // Rows come closest-first, so only a strictly better tier replaces.
+        if best.as_ref().is_none_or(|(t, _)| tier < *t) {
+            let done = tier == 0;
+            best = Some((tier, info));
+            if done {
+                break;
+            }
+        }
+    }
+    best.map(|(_, info)| info)
+}
+
 /// Parse Sesame's XML (`-ox` output). `Ok(None)` = nothing found.
 pub fn parse_sesame(xml: &str) -> Result<Option<ObjectInfo>, String> {
     let doc = roxmltree::Document::parse(xml).map_err(|e| format!("Sesame XML invalid: {e}"))?;
@@ -196,30 +360,7 @@ pub fn parse_sesame(xml: &str) -> Result<Option<ObjectInfo>, String> {
         .chain(std::iter::once(main_id.clone()))
         .collect();
 
-    let common_name = pick_common_name(&aliases);
-
-    let mut designations = Vec::new();
-    for cat in CATALOGS {
-        for alias in &aliases {
-            if let Some(d) = catalog_designation(cat, alias) {
-                if !designations.contains(&d) {
-                    designations.push(d);
-                }
-            }
-        }
-    }
-
-    let aliases_norm = aliases.iter().map(|a| normalize(a)).collect();
-
-    Ok(Some(ObjectInfo {
-        main_id,
-        common_name,
-        designations,
-        aliases_norm,
-        otype,
-        ra_deg,
-        dec_deg,
-    }))
+    Ok(Some(ObjectInfo::from_aliases(main_id, aliases, otype, ra_deg, dec_deg)))
 }
 
 /// If `alias` is "<simbad prefix><number>" for this catalogue, return the
@@ -369,9 +510,23 @@ pub struct Identification {
     pub note: Option<String>,
 }
 
+/// A candidate found by name, before the coordinate check.
+struct Named {
+    info: ObjectInfo,
+    /// The designation the user wrote (file name / header), for the title.
+    preferred: Option<String>,
+    note: Option<String>,
+}
+
 /// Work out what to stamp on an image, given the header's OBJECT keyword (if
-/// any) and the file name stem.
-pub fn identify(resolver: &mut Resolver, header_object: Option<&str>, stem: &str) -> Identification {
+/// any), the header coordinates (plate solution or mount target, if any) and
+/// the file name stem.
+pub fn identify(
+    resolver: &mut Resolver,
+    header_object: Option<&str>,
+    coords: Option<SkyCoords>,
+    stem: &str,
+) -> Identification {
     let fallback = || Identification {
         label: Label::plain(stem),
         note: None,
@@ -386,10 +541,87 @@ pub fn identify(resolver: &mut Resolver, header_object: Option<&str>, stem: &str
         .map(|s| s.trim_matches('\'').trim())
         .filter(|s| !s.is_empty());
 
-    // 1. Header OBJECT, cross-checked against the file name.
+    let named = identify_by_name(resolver, header, file_desig.as_deref());
+
+    // --- Coordinates: validate the name, or identify an unnamed frame ------
+    if let Some(c) = coords {
+        match named {
+            Some(named) => {
+                let (Some(ra), Some(dec)) = (named.info.ra_deg, named.info.dec_deg) else {
+                    return Identification {
+                        label: compose(&named.info, named.preferred.as_deref()),
+                        note: named.note,
+                    };
+                };
+                let sep = c.separation_deg(ra, dec);
+                if sep <= c.tolerance_deg() {
+                    return Identification {
+                        label: compose(&named.info, named.preferred.as_deref()),
+                        note: named.note,
+                    };
+                }
+
+                // The name does not fit where the frame points. Ask SIMBAD
+                // what is actually there; a prominent object wins.
+                let where_from = if c.solved { "plate solution" } else { "header coordinates" };
+                let what = named
+                    .preferred
+                    .clone()
+                    .unwrap_or_else(|| named.info.main_id.clone());
+                if let Some(actual) = resolver.nearby(c.ra_deg, c.dec_deg, c.search_radius_deg()).cloned() {
+                    if !actual.same_object(&named.info) && actual.is_notable() {
+                        return Identification {
+                            label: compose(&actual, None),
+                            note: Some(format!(
+                                "{what} is {sep:.1}° from the {where_from}; the frame is centred on {}, used that",
+                                actual_title(&actual)
+                            )),
+                        };
+                    }
+                }
+                let mut note = format!(
+                    "{what} is {sep:.1}° from the {where_from} (tolerance {:.1}°)",
+                    c.tolerance_deg()
+                );
+                if let Some(n) = named.note {
+                    note = format!("{n}; {note}");
+                }
+                return Identification {
+                    label: compose(&named.info, named.preferred.as_deref()),
+                    note: Some(note),
+                };
+            }
+            None => {
+                if let Some(actual) = resolver.nearby(c.ra_deg, c.dec_deg, c.search_radius_deg()).cloned() {
+                    let where_from = if c.solved { "plate solution" } else { "header coordinates" };
+                    return Identification {
+                        label: compose(&actual, None),
+                        note: Some(format!("identified from the {where_from}")),
+                    };
+                }
+            }
+        }
+    } else if let Some(named) = named {
+        return Identification {
+            label: compose(&named.info, named.preferred.as_deref()),
+            note: named.note,
+        };
+    }
+
+    // Nothing resolved (or the network went away).
+    let mut id = fallback();
+    if resolver.enabled() && (header.is_some() || file_desig.is_some()) {
+        id.note = Some("object not found in SIMBAD; used file name".into());
+    }
+    id
+}
+
+/// Header OBJECT first, cross-checked against the file name; then the file
+/// name alone.
+fn identify_by_name(resolver: &mut Resolver, header: Option<&str>, file_desig: Option<&str>) -> Option<Named> {
     if let Some(h) = header {
         if let Some(info) = resolver.resolve(h).cloned() {
-            match &file_desig {
+            return Some(match file_desig {
                 Some(fd) if !info.matches(fd) => {
                     // Disagreement. Trust the file name if it resolves.
                     if let Some(info2) = resolver.resolve(fd).cloned() {
@@ -400,53 +632,53 @@ pub fn identify(resolver: &mut Resolver, header_object: Option<&str>, stem: &str
                         } else {
                             format!(" ({})", info.main_id)
                         };
-                        return Identification {
-                            label: compose(&info2, Some(fd)),
+                        Named {
+                            info: info2,
+                            preferred: Some(fd.to_string()),
                             note: Some(format!(
                                 "header OBJECT is '{h}'{resolved_as} but file name says {fd}; used file name"
                             )),
-                        };
+                        }
+                    } else {
+                        Named {
+                            preferred: designation_in_name(h),
+                            note: Some(format!(
+                                "header OBJECT '{h}' ({}) does not match file name designation {fd}",
+                                info.main_id
+                            )),
+                            info,
+                        }
                     }
-                    return Identification {
-                        label: compose(&info, designation_in_name(h).as_deref()),
-                        note: Some(format!(
-                            "header OBJECT '{h}' ({}) does not match file name designation {fd}",
-                            info.main_id
-                        )),
-                    };
                 }
-                Some(fd) => {
-                    return Identification {
-                        label: compose(&info, Some(fd)),
-                        note: None,
-                    };
-                }
-                None => {
-                    return Identification {
-                        label: compose(&info, designation_in_name(h).as_deref()),
-                        note: None,
-                    };
-                }
-            }
+                Some(fd) => Named {
+                    info,
+                    preferred: Some(fd.to_string()),
+                    note: None,
+                },
+                None => Named {
+                    preferred: designation_in_name(h),
+                    info,
+                    note: None,
+                },
+            });
         }
     }
 
-    // 2. File name designation alone.
-    if let Some(fd) = &file_desig {
+    if let Some(fd) = file_desig {
         if let Some(info) = resolver.resolve(fd).cloned() {
-            return Identification {
-                label: compose(&info, Some(fd)),
+            return Some(Named {
+                info,
+                preferred: Some(fd.to_string()),
                 note: None,
-            };
+            });
         }
     }
+    None
+}
 
-    // 3. Nothing resolved (or the network went away).
-    let mut id = fallback();
-    if resolver.enabled() && (header.is_some() || file_desig.is_some()) {
-        id.note = Some("object not found in SIMBAD; used file name".into());
-    }
-    id
+/// Short human name for notes: "Great Orion Nebula (M 42)" or "NGC 7000".
+fn actual_title(info: &ObjectInfo) -> String {
+    compose(info, None).title
 }
 
 /// Build the two-line label: "Common Name (Designation)" over
@@ -714,5 +946,24 @@ mod tests {
 
         let none = parse_sesame(r#"<Sesame><Target><name>ZZZ</name><INFO> *** Nothing found *** </INFO></Target></Sesame>"#).unwrap();
         assert!(none.is_none());
+    }
+
+    #[test]
+    fn tap_ranking_prefers_prominent_objects() {
+        // Closest-first rows as SIMBAD returns them: obscure PNe inside M31
+        // come before M31 itself; the Messier object must still win.
+        let tsv = "main_id\totype\tra\tdec\td\tids\n\
+            \"[PSC2013] 9\"\t\"PN\"\t10.6835\t41.2690\t0.0009\t\"[PSC2013] 9\"\n\
+            \"Ford M 31 574\"\t\"PN\"\t10.6873\t41.2678\t0.0022\t\"Ford M 31 574|[B2015] M31 B127-33\"\n\
+            \"NGC  206\"\t\"Cl*\"\t10.10\t40.73\t0.7\t\"NGC   206|OB 78\"\n\
+            \"M  31\"\t\"AGN\"\t10.6847\t41.2687\t0.9\t\"NAME Andromeda Galaxy|M  31|NGC   224|UGC   454\"\n";
+        let best = parse_tap_tsv(tsv).unwrap();
+        assert_eq!(best.main_id, "M 31");
+        assert_eq!(best.designations[0], "M 31");
+        assert_eq!(best.common_name.as_deref(), Some("Andromeda Galaxy"));
+
+        // Only obscure objects -> nothing worth stamping.
+        let tsv = "main_id\totype\tra\tdec\td\tids\n\"[PSC2013] 9\"\t\"PN\"\t1\t2\t0.1\t\"[PSC2013] 9\"\n";
+        assert!(parse_tap_tsv(tsv).is_none());
     }
 }

@@ -217,6 +217,7 @@ fn process_one(
     }
 
     let mut header_object: Option<String> = None;
+    let mut header_coords = None;
     let mut img = if opts.png_only {
         image::ImageReader::open(src)
             .and_then(|r| r.decode().map_err(std::io::Error::other))
@@ -229,6 +230,7 @@ fn process_one(
         }
         .map_err(|e| e.to_string())?;
         header_object = data.object.clone();
+        header_coords = data.coords;
         let image8 = pixels::to_image(&data).map_err(|e| e.to_string())?;
         image8_to_dynamic(image8)?
     };
@@ -240,7 +242,7 @@ fn process_one(
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let id = lookup::identify(resolver, header_object.as_deref(), &stem);
+        let id = lookup::identify(resolver, header_object.as_deref(), header_coords, &stem);
         if id.label != Label::plain(&stem) {
             label = Some(id.label.title.clone());
         }

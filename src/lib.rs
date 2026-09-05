@@ -7,6 +7,7 @@ pub mod fits;
 pub mod lookup;
 pub mod pixels;
 pub mod post;
+pub mod wcs;
 pub mod xisf;
 
 pub use batch::{collect_files, run, FileStatus, Options, Progress, Summary};

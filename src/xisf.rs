@@ -49,6 +49,8 @@ pub struct XisfImageData {
     /// Target name from the header (FITS `OBJECT` keyword or the XISF
     /// `Observation:Object:Name` property), if present.
     pub object: Option<String>,
+    /// Image centre from the plate solution or the mount target, if present.
+    pub coords: Option<crate::wcs::SkyCoords>,
 }
 
 #[derive(Debug)]
@@ -103,24 +105,26 @@ pub fn read(path: &Path) -> Result<XisfImageData> {
 
     let attr = |name: &str| image.attribute(name);
 
-    // --- Target name (for the stamp) ---
-    let object = image
-        .children()
-        .filter(|n| n.is_element() && n.tag_name().name() == "FITSKeyword")
-        .find(|n| n.attribute("name").is_some_and(|k| k.trim().eq_ignore_ascii_case("OBJECT")))
-        .and_then(|n| n.attribute("value"))
-        .map(|v| v.trim().trim_matches('\'').trim().to_string())
-        .or_else(|| {
-            doc.descendants()
-                .find(|n| {
-                    n.is_element()
-                        && n.tag_name().name() == "Property"
-                        && n.attribute("id") == Some("Observation:Object:Name")
-                })
-                .and_then(|n| n.text())
-                .map(|t| t.trim().to_string())
-        })
-        .filter(|s| !s.is_empty());
+    // --- Header metadata for the stamp: target name and coordinates ---
+    // FITS keywords carried over by the capture software, then XISF's own
+    // properties as a fallback.
+    let fits_keyword = |key: &str| -> Option<String> {
+        image
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == "FITSKeyword")
+            .find(|n| n.attribute("name").is_some_and(|k| k.trim().eq_ignore_ascii_case(key)))
+            .and_then(|n| n.attribute("value"))
+            .map(|v| v.trim().trim_matches('\'').trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let property = |id: &str| -> Option<String> {
+        doc.descendants()
+            .find(|n| n.is_element() && n.tag_name().name() == "Property" && n.attribute("id") == Some(id))
+            .and_then(|n| n.text().map(str::trim).map(str::to_string).or_else(|| n.attribute("value").map(str::to_string)))
+            .filter(|s| !s.is_empty())
+    };
+
+    let object = fits_keyword("OBJECT").or_else(|| property("Observation:Object:Name"));
 
     // --- Geometry ---
     let geometry = attr("geometry")
@@ -140,6 +144,18 @@ pub fn read(path: &Path) -> Result<XisfImageData> {
     let width = width as u32;
     let height = height as u32;
     let channels = channels as u32;
+
+    let coords = crate::wcs::from_keywords(
+        &|key| {
+            fits_keyword(key).or_else(|| match key {
+                "RA" => property("Observation:Center:RA"),
+                "DEC" => property("Observation:Center:Dec"),
+                _ => None,
+            })
+        },
+        width,
+        height,
+    );
 
     // --- Sample format ---
     let sample_format = attr("sampleFormat").unwrap_or("UInt16");
@@ -218,6 +234,7 @@ pub fn read(path: &Path) -> Result<XisfImageData> {
 
     Ok(XisfImageData {
         object,
+        coords,
         width,
         height,
         channels,

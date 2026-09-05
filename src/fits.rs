@@ -125,6 +125,7 @@ pub fn parse(bytes: &[u8]) -> Result<XisfImageData> {
         .string("OBJECT")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    let coords = crate::wcs::from_keywords(&|k| header.value(k), width, height);
 
     Ok(XisfImageData {
         width,
@@ -135,6 +136,7 @@ pub fn parse(bytes: &[u8]) -> Result<XisfImageData> {
         big_endian: true,
         raw_data,
         object,
+        coords,
     })
 }
 
@@ -224,6 +226,17 @@ impl Header {
     fn float(&self, key: &str) -> Option<f64> {
         // FITS allows Fortran-style 'D' exponents.
         self.get(key)?.replace(['D', 'd'], "E").parse().ok()
+    }
+
+    /// Any value as text: strings unquoted, numbers as written.
+    fn value(&self, key: &str) -> Option<String> {
+        let v = self.get(key)?;
+        if v.starts_with('\'') {
+            self.string(key)
+        } else {
+            Some(v.trim().to_string())
+        }
+        .filter(|s| !s.is_empty())
     }
 
     /// A quoted string value with the quotes removed and '' unescaped.

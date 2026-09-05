@@ -88,23 +88,38 @@ With `--resize4k` (or `--png-only`) the stamp is a two-line label:
 NGC 224  ·  UGC 454  ·  Galaxy (active nucleus)  ·  RA 00h 42m 44s  Dec +41° 16′ 08″
 ```
 
-The object is identified from two sources and cross-checked:
+The object is identified from three sources and cross-checked:
 
 1. the `OBJECT` keyword in the FITS header or XISF header (what your capture
-   software was told the target was), and
+   software was told the target was);
 2. a catalogue designation in the file name — `M31`, `NGC_7000`, `IC 1396`,
    `Sh2-155`, `B33`, `LDN1235`, `vdB141`, `Cr399`, `Mel15`, `Ced214`,
    `Arp273`, `UGC`, `PGC`, `HD`, `HIP` are recognised, in any case and with
    `_`, `-` or a space as separator. Filter letters and exposure times such
-   as `_B_120s` are not mistaken for catalogue ids.
+   as `_B_120s` are not mistaken for catalogue ids;
+3. the image coordinates: the plate solution if the file has one (WCS
+   keywords `CRVAL1/2`, `CRPIX1/2`, `CD` matrix or `CDELT`), otherwise the
+   mount target (`OBJCTRA`/`OBJCTDEC`, `RA`/`DEC`, or XISF
+   `Observation:Center:RA/Dec`).
 
-The name is resolved through the [CDS Sesame](https://cds.unistra.fr/cgi-bin/Sesame)
+Names are resolved through the [CDS Sesame](https://cds.unistra.fr/cgi-bin/Sesame)
 service (SIMBAD), which understands free-form names too (`OBJECT = 'Pleiades'`
-gives "Pleiades (M 45)"). If the header and the file name disagree, the file
-name wins and a `note:` line is printed. If nothing resolves, or you are
-offline, the plain file name is stamped as before. Every distinct name is
-looked up once per run, so a folder of 300 subs of one target costs a single
-request. `--no-lookup` disables all of this.
+gives "Pleiades (M 45)"). The rules:
+
+- Header and file name disagree → the file name wins, with a `note:` line.
+- The named object is more than 2° (plus half the field of view) from where
+  the frame points → SIMBAD is asked what deep-sky object actually sits at
+  the image centre. If a prominent one is there (Messier, NGC, IC, Sharpless,
+  … or a common name), it is stamped instead and a note says why; if not,
+  the name is kept and the note reports the distance.
+- No usable name at all (`Light_0001.fits`) but coordinates present → the
+  frame is identified from its coordinates alone, same prominence rule.
+- Nothing resolves, or you are offline → the plain file name is stamped as
+  before.
+
+Each distinct name or position is looked up once per run, so a folder of 300
+subs of one target costs one or two requests. `--no-lookup` disables all of
+this.
 
 The second line lists up to three other catalogue ids (Messier, NGC, IC,
 Sharpless, Barnard, LBN, LDN, vdB, Collinder, Melotte, Cederblad, Arp, UGC,

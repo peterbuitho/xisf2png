@@ -219,7 +219,7 @@ pub const POPULAR_NAMES: &[(&str, &str)] = &[
     ("NGC 6188", "Rim Nebula"),
     ("NGC 6210", "Turtle Nebula"),
     ("NGC 6334", "Cat's Paw Nebula"),
-    ("NGC 6357", "Lobster Nebula"),
+    ("NGC 6357", "War and Peace Nebula"),
     ("NGC 6369", "Little Ghost Nebula"),
     ("NGC 6537", "Red Spider Nebula"),
     ("NGC 6572", "Blue Racquetball Nebula"),
@@ -285,15 +285,20 @@ pub const POPULAR_NAMES: &[(&str, &str)] = &[
     ("vdB 141", "Ghost Nebula"),
     // Galaxies
     ("NGC 1316", "Fornax A"),
+    ("NGC 1317", "Fornax B"), // companion to NGC 1316 above
     ("NGC 1365", "Great Barred Spiral Galaxy"),
     ("NGC 1566", "Spanish Dancer Galaxy"),
     ("NGC 2442", "Meathook Galaxy"),
+    ("NGC 2537", "Bear's Paw Galaxy"), // SIMBAD's own alias list also has
+    // "Bear Claw Nebula", which our automatic pick prefers (it ends in a
+    // type word) but is a mismatched, less-used name for a galaxy.
     ("NGC 2683", "UFO Galaxy"),
     ("NGC 2841", "Tiger's Eye Galaxy"),
     ("NGC 3184", "Little Pinwheel Galaxy"),
     ("NGC 3344", "Sliced Onion Galaxy"),
     ("NGC 3521", "Bubble Galaxy"),
     ("NGC 3628", "Hamburger Galaxy"),
+    ("NGC 4435", "Eyes Galaxies"), // paired with NGC 4438 below (Markarian's Eyes)
     ("NGC 4438", "Eyes Galaxies"),
     ("NGC 4490", "Cocoon Galaxy"),
     ("NGC 4535", "Lost Galaxy"),
@@ -455,6 +460,12 @@ mod tests {
         assert_eq!(popular_name(&["M 65".into()]).as_deref(), Some("Leo Triplet"));
         assert_eq!(popular_name(&["M 66".into()]).as_deref(), Some("Leo Triplet"));
         assert_eq!(popular_name(&["SH 2-206".into()]).as_deref(), Some("Fossil Footprint Nebula"));
+        // Cross-checked against OpenNGC: a correction (was wrongly "Lobster
+        // Nebula", which SIMBAD actually attaches to M 17) and two gaps.
+        assert_eq!(popular_name(&["NGC 6357".into()]).as_deref(), Some("War and Peace Nebula"));
+        assert_eq!(popular_name(&["NGC 1317".into()]).as_deref(), Some("Fornax B"));
+        assert_eq!(popular_name(&["NGC 4435".into()]).as_deref(), Some("Eyes Galaxies"));
+        assert_eq!(popular_name(&["NGC 2537".into()]).as_deref(), Some("Bear's Paw Galaxy"));
         // Every table entry must be in canonical pretty form so it matches.
         for (d, _) in POPULAR_NAMES {
             assert!(

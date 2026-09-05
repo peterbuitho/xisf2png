@@ -39,6 +39,12 @@ pub struct Options {
     /// name and catalogue info instead of the bare file name. Only relevant
     /// when stamping; the file name is the fallback.
     pub lookup: bool,
+    /// Explicit files to process (e.g. from a right-click selection or drag
+    /// and drop). When non-empty, `input_dir`, `recursive` and `png_only` are
+    /// not used for scanning: each file is handled by its own extension
+    /// (`.png` = resize/stamp only) and written next to itself unless
+    /// `output_dir` is set, in which case all outputs go flat into it.
+    pub files: Vec<PathBuf>,
 }
 
 impl Options {
@@ -124,7 +130,8 @@ pub fn run(
     cancel: &AtomicBool,
     report: &mut dyn FnMut(&Progress),
 ) -> Result<Summary, String> {
-    if !opts.input_dir.is_dir() {
+    let explicit = !opts.files.is_empty();
+    if !explicit && !opts.input_dir.is_dir() {
         return Err(format!(
             "Input directory not found: {}",
             opts.input_dir.display()
@@ -141,14 +148,17 @@ pub fn run(
     };
 
     let mut files = Vec::new();
-    collect_files(&opts.input_dir, opts.recursive, opts.input_exts(), &mut files);
-    files.sort_by_key(|p| p.to_string_lossy().to_lowercase());
+    if explicit {
+        files.extend(opts.files.iter().cloned());
+    } else {
+        collect_files(&opts.input_dir, opts.recursive, opts.input_exts(), &mut files);
+        files.sort_by_key(|p| p.to_string_lossy().to_lowercase());
+    }
 
     let mut summary = Summary {
         total: files.len(),
         ..Summary::default()
     };
-    let output_dir = opts.output_dir();
     let mut resolver = Resolver::new(opts.lookup && stamper.is_some());
 
     for (i, file) in files.iter().enumerate() {
@@ -157,8 +167,19 @@ pub fn run(
             break;
         }
 
-        let rel = file.strip_prefix(&opts.input_dir).unwrap_or(file);
-        let dest = output_dir.join(rel).with_extension("png");
+        // Display name and destination. Scanned files keep their position
+        // relative to the input folder; explicit files are flat.
+        let rel: PathBuf = if explicit {
+            file.file_name().map(PathBuf::from).unwrap_or_else(|| file.clone())
+        } else {
+            file.strip_prefix(&opts.input_dir).unwrap_or(file).to_path_buf()
+        };
+        let dest = match (&opts.output_dir, explicit) {
+            (Some(out), _) => out.join(&rel).with_extension("png"),
+            (None, true) => file.with_extension("png"),
+            (None, false) => opts.input_dir.join(&rel).with_extension("png"),
+        };
+        let rel = rel.as_path();
 
         let (status, label, note) =
             match process_one(file, &dest, opts, stamper.as_ref(), &mut resolver) {
@@ -207,7 +228,9 @@ fn process_one(
     stamper: Option<&Stamper>,
     resolver: &mut Resolver,
 ) -> Result<Outcome, String> {
-    let in_place = opts.png_only && is_same_file(src, dest);
+    // A PNG source is only ever resized/stamped, never "converted".
+    let is_png = has_ext(src, &["png"]);
+    let in_place = is_png && is_same_file(src, dest);
     if !in_place && dest.exists() && !opts.overwrite {
         return Ok(Outcome {
             written: false,
@@ -218,7 +241,7 @@ fn process_one(
 
     let mut header_object: Option<String> = None;
     let mut header_coords = None;
-    let mut img = if opts.png_only {
+    let mut img = if is_png {
         image::ImageReader::open(src)
             .and_then(|r| r.decode().map_err(std::io::Error::other))
             .map_err(|e| format!("cannot read PNG: {e}"))?

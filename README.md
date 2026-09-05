@@ -44,17 +44,44 @@ resize with object-name stamp and the online lookup are on by default), and
 press **Convert**. Progress and a per-file log stream in as the batch runs;
 **Cancel** stops after the current file.
 
+Instead of a folder you can work on an explicit set of files: **Add files…**,
+drop files or a folder onto the window, or pass them on the command line
+(`xisf2png-gui a.xisf b.fits`). Files are converted next to themselves unless
+an output folder is set; `.png` files in the selection are only resized and
+stamped. Only one window ever opens: a second launch hands its files to the
+running window instead.
+
+### Right-click / "Open with"
+
+- **Windows:** open the *Right-click / "Open with" integration* section in the
+  GUI and click *Add to Explorer right-click menu*. From then on, select any
+  number of `.xisf` / `.fits` / `.fit` / `.fts` files in Explorer, right-click →
+  **Convert to PNG with xisf2png**, and one window opens with all of them
+  listed; press Convert. This writes per-user registry keys under
+  `HKCU\Software\Classes\SystemFileAssociations` (no admin rights) and can be
+  undone with the same button. Scriptable: `xisf2png-gui --install-context-menu`
+  / `--uninstall-context-menu`. If you move the executable, install again.
+- **Linux:** the same section installs a `.desktop` entry (with a MIME type
+  for `.xisf`), so file managers offer *Open with → xisf2png* for FITS and
+  XISF files and pass the whole selection at once.
+- **macOS:** drop files onto the window, or from Terminal
+  `open -a xisf2png --args ~/astro/*.fits`. Finder's *Open With* is not
+  wired up, because the windowing library does not deliver those events.
+
 ## Command line
 
 ```
 xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--no-lookup] [--font <file>]
 xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite] [--no-lookup] [--font <file>]
+xisf2png <file>... [output_dir] [--overwrite] [--resize4k] [--no-lookup] [--font <file>]
 ```
 
 Every `.xisf`, `.fits`, `.fit` and `.fts` file found is converted. If
 `input_dir` is omitted, the current folder is used. If `output_dir` is
 omitted, PNGs are written next to their source files (or, with `--png-only`,
-edited in place).
+edited in place). Explicit files may also be given instead of a folder; each
+is handled by its extension (`.png` = resize/stamp only) and written next to
+itself, or flat into `output_dir` if one is given.
 
 | Option              | Meaning                                                     |
 | ------------------- | ----------------------------------------------------------- |

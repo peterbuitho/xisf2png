@@ -1,6 +1,6 @@
 //! xisf2png command-line interface.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
@@ -59,7 +59,11 @@ fn main() -> ExitCode {
                     usage();
                     return ExitCode::from(2);
                 }
-                if input_dir.is_none() {
+                // Positional: existing files are inputs to process; anything
+                // else is a folder (input first, then output).
+                if Path::new(a).is_file() {
+                    opts.files.push(PathBuf::from(a));
+                } else if input_dir.is_none() && opts.files.is_empty() {
                     input_dir = Some(a.clone());
                 } else if output_dir.is_none() {
                     output_dir = Some(a.clone());
@@ -73,6 +77,11 @@ fn main() -> ExitCode {
         i += 1;
     }
 
+    // "xisf2png out_dir a.xisf": with explicit files the only folder that
+    // makes sense is the output folder.
+    if !opts.files.is_empty() && output_dir.is_none() {
+        output_dir = input_dir.take();
+    }
     // No input folder given: work on the current directory.
     opts.input_dir = PathBuf::from(input_dir.unwrap_or_else(|| ".".to_string()));
     opts.output_dir = output_dir.map(PathBuf::from);
@@ -129,8 +138,10 @@ fn usage() {
         "xisf2png {} - batch convert XISF and FITS astronomical images to PNG\n\n\
          Usage:\n\
          \x20 xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k]\n\
-         \x20 xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite]\n\n\
-         Converts every .xisf, .fits, .fit and .fts file found.\n\
+         \x20 xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite]\n\
+         \x20 xisf2png <file>... [output_dir] [--overwrite] [--resize4k]\n\n\
+         Converts every .xisf, .fits, .fit and .fts file found in input_dir, or\n\
+         exactly the files given (.png files are only resized/stamped).\n\
          If input_dir is omitted, the current folder is used.\n\
          If output_dir is omitted, PNGs are written next to their source files.\n\n\
          Options:\n\

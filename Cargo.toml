@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "xisf2png-gui"
-path = "src/bin/gui.rs"
+path = "src/bin/gui/main.rs"
 
 [dependencies]
 roxmltree = "0.20"

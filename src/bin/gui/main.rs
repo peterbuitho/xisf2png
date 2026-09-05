@@ -4,6 +4,9 @@
 // Hide the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod instance;
+mod shell;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -14,7 +17,36 @@ use eframe::egui::{self, Color32, RichText};
 use xisf2png::{FileStatus, Options, Progress, Summary};
 
 fn main() -> eframe::Result {
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon-256.png"))
+    // Scriptable desktop integration (also used by tests and installers).
+    if let Some(flag) = std::env::args().nth(1).filter(|a| a.starts_with("--")) {
+        let outcome = match flag.as_str() {
+            "--install-context-menu" => shell::install(),
+            "--uninstall-context-menu" => shell::uninstall(),
+            "--context-menu-status" => shell::Outcome {
+                ok: true,
+                message: if shell::is_installed() { "installed".into() } else { "not installed".into() },
+            },
+            other => shell::Outcome {
+                ok: false,
+                message: format!(
+                    "unknown option {other}; use --install-context-menu, --uninstall-context-menu or --context-menu-status"
+                ),
+            },
+        };
+        println!("{}", outcome.message);
+        std::process::exit(if outcome.ok { 0 } else { 1 });
+    }
+
+    // Files / folders given on the command line (Explorer "Open with",
+    // right-click verb, `xisf2png-gui a.xisf b.fits`, `open --args` ...).
+    let initial = instance::paths_from_args();
+
+    // If another window is already open, hand the paths to it and quit.
+    let Some(listener) = instance::claim(&initial) else {
+        return Ok(());
+    };
+
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon-256.png"))
         .expect("bundled icon is a valid PNG");
 
     let options = eframe::NativeOptions {
@@ -29,13 +61,19 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "xisf2png",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             install_fallback_font(&cc.egui_ctx);
-            Ok(Box::new(App {
+            let (tx, rx) = mpsc::channel();
+            instance::serve(listener, tx, cc.egui_ctx.clone());
+            let mut app = App {
                 resize4k: true,
                 lookup: true,
+                incoming: Some(rx),
+                integration_installed: shell::is_installed(),
                 ..App::default()
-            }))
+            };
+            app.add_paths(initial);
+            Ok(Box::new(app))
         }),
     )
 }
@@ -117,6 +155,16 @@ struct App {
     png_only: bool,
     lookup: bool,
     font_file: String,
+    /// Explicit files (right-click selection, drag and drop, "Add files…").
+    /// When non-empty they are processed instead of scanning `input_dir`.
+    files: Vec<PathBuf>,
+
+    /// Paths handed over by later instances (see `instance.rs`).
+    incoming: Option<Receiver<Vec<PathBuf>>>,
+
+    // Desktop integration (right-click / Open with)
+    integration_installed: bool,
+    integration_msg: Option<(bool, String)>,
 
     // Run state
     job: Option<Job>,
@@ -141,6 +189,47 @@ impl App {
             png_only: self.png_only,
             font: (!font.is_empty()).then(|| PathBuf::from(font)),
             lookup: self.lookup,
+            files: self.files.clone(),
+        }
+    }
+
+    /// Take in paths from the command line, another instance, or a drop:
+    /// folders become the input folder, files join the file list.
+    fn add_paths(&mut self, paths: Vec<PathBuf>) {
+        for p in paths {
+            if p.is_dir() {
+                self.input_dir = p.display().to_string();
+            } else if p.is_file() && !self.files.contains(&p) {
+                self.files.push(p);
+            }
+        }
+    }
+
+    /// Paths from other instances and from drag-and-drop onto the window.
+    fn collect_incoming(&mut self, ctx: &egui::Context) {
+        let mut new = Vec::new();
+        if let Some(rx) = &self.incoming {
+            while let Ok(batch) = rx.try_recv() {
+                new.extend(batch);
+            }
+        }
+        ctx.input(|i| {
+            new.extend(i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()));
+        });
+        if !new.is_empty() {
+            self.add_paths(new);
+        }
+    }
+
+    fn pick_files(&mut self) {
+        let mut exts: Vec<&str> = shell::EXTENSIONS.to_vec();
+        exts.push("png");
+        if let Some(picked) = rfd::FileDialog::new()
+            .add_filter("Astro images", &exts)
+            .add_filter("All files", &["*"])
+            .pick_files()
+        {
+            self.add_paths(picked);
         }
     }
 
@@ -215,23 +304,79 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll();
+        self.collect_incoming(ui.ctx());
         let running = self.job.is_some();
+        let file_mode = !self.files.is_empty();
 
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
             ui.heading("XISF / FITS → PNG batch converter");
             ui.add_space(6.0);
 
-            // ---- Folders --------------------------------------------------
+            // ---- Inputs ---------------------------------------------------
             ui.add_enabled_ui(!running, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
 
-                if path_row(ui, "Input folder", &mut self.input_dir, "current folder") {
-                    if let Some(p) = Self::browse_folder(&self.input_dir) {
-                        self.input_dir = p.display().to_string();
+                if file_mode {
+                    // Explicit file list replaces the input folder.
+                    ui.horizontal(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(LABEL_WIDTH, ui.spacing().interact_size.y),
+                            egui::Sense::hover(),
+                        );
+                        let mut column = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        column.label("Files");
+                        ui.label(format!("{} selected", self.files.len()));
+                        if ui.button("Add files…").clicked() {
+                            self.pick_files();
+                        }
+                        if ui.button("Clear").clicked() {
+                            self.files.clear();
+                        }
+                    });
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("files")
+                            .max_height(110.0)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                for f in &self.files {
+                                    let name =
+                                        f.file_name().map(|n| n.to_string_lossy().into_owned());
+                                    ui.label(
+                                        RichText::new(name.unwrap_or_default())
+                                            .text_style(egui::TextStyle::Monospace),
+                                    )
+                                    .on_hover_text(f.display().to_string());
+                                }
+                            });
+                    });
+                } else {
+                    if path_row(ui, "Input folder", &mut self.input_dir, "current folder") {
+                        if let Some(p) = Self::browse_folder(&self.input_dir) {
+                            self.input_dir = p.display().to_string();
+                        }
                     }
+                    ui.horizontal(|ui| {
+                        ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+                        if ui.button("Add files…").clicked() {
+                            self.pick_files();
+                        }
+                        ui.label(
+                            RichText::new("or drop files / a folder onto this window")
+                                .weak()
+                                .small(),
+                        );
+                    });
                 }
 
-                let output_hint = if self.png_only {
+                let output_hint = if file_mode {
+                    "next to each source file"
+                } else if self.png_only {
                     "same as input (edit PNGs in place)"
                 } else {
                     "same as input (PNGs next to sources)"
@@ -265,13 +410,20 @@ impl eframe::App for App {
 
                 // ---- Options ----------------------------------------------
                 ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut self.recursive, "Recurse into subfolders");
+                    ui.add_enabled(
+                        !file_mode,
+                        egui::Checkbox::new(&mut self.recursive, "Recurse into subfolders"),
+                    );
                     ui.checkbox(&mut self.overwrite, "Overwrite existing PNGs");
-                    ui.checkbox(&mut self.png_only, "PNG only (no XISF/FITS conversion)")
-                        .on_hover_text(
-                            "Take existing .png files and only resize/stamp them. \
-                             Implies 4K resize.",
-                        );
+                    ui.add_enabled(
+                        !file_mode,
+                        egui::Checkbox::new(&mut self.png_only, "PNG only (no XISF/FITS conversion)"),
+                    )
+                    .on_hover_text(
+                        "Take existing .png files and only resize/stamp them. \
+                         Implies 4K resize. (With an explicit file list, each file \
+                         is handled by its extension.)",
+                    );
                     ui.add_enabled(
                         !self.png_only,
                         egui::Checkbox::new(
@@ -295,6 +447,39 @@ impl eframe::App for App {
                 });
             });
 
+            // ---- Desktop integration ------------------------------------------
+            egui::CollapsingHeader::new("Right-click / \"Open with\" integration")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label(RichText::new(shell::HINT).weak());
+                    if shell::supported() {
+                        ui.horizontal(|ui| {
+                            let label = if self.integration_installed {
+                                shell::UNINSTALL_LABEL
+                            } else {
+                                shell::INSTALL_LABEL
+                            };
+                            if ui.button(label).clicked() {
+                                let outcome = if self.integration_installed {
+                                    shell::uninstall()
+                                } else {
+                                    shell::install()
+                                };
+                                self.integration_installed = shell::is_installed();
+                                self.integration_msg = Some((outcome.ok, outcome.message));
+                            }
+                            if let Some((ok, msg)) = &self.integration_msg {
+                                let color = if *ok {
+                                    Color32::from_rgb(120, 200, 120)
+                                } else {
+                                    Color32::from_rgb(230, 120, 120)
+                                };
+                                ui.label(RichText::new(msg).color(color).small());
+                            }
+                        });
+                    }
+                });
+
             ui.add_space(8.0);
 
             // ---- Run / Cancel -----------------------------------------------
@@ -317,7 +502,13 @@ impl eframe::App for App {
                             .desired_width(ui.available_width()),
                     );
                 } else {
-                    let label = if self.png_only { "Resize && stamp PNGs" } else { "Convert" };
+                    let label = if file_mode {
+                        format!("Convert {} file{}", self.files.len(), if self.files.len() == 1 { "" } else { "s" })
+                    } else if self.png_only {
+                        "Resize && stamp PNGs".to_string()
+                    } else {
+                        "Convert".to_string()
+                    };
                     if ui
                         .add(egui::Button::new(RichText::new(label).strong()))
                         .clicked()
@@ -399,5 +590,23 @@ impl eframe::App for App {
                     }
                 });
         });
+
+        // ---- Drag-and-drop overlay ----------------------------------------------
+        let hovering = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
+        if hovering {
+            let rect = ui.ctx().content_rect();
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("drop-overlay"),
+            ));
+            painter.rect_filled(rect, 0.0, Color32::from_black_alpha(110));
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Drop to add files (or a folder)",
+                egui::FontId::proportional(28.0),
+                Color32::WHITE,
+            );
+        }
     }
 }

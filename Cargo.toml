@@ -1,6 +1,6 @@
 [package]
 name = "xisf2png"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Batch convert XISF astronomical images to PNG"
 

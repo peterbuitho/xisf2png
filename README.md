@@ -154,8 +154,8 @@ attaches everything to a GitHub Release. To cut a release, tag a commit and
 push the tag:
 
 ```
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 To check that everything still builds without publishing anything, run the

@@ -29,13 +29,68 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "xisf2png",
         options,
-        Box::new(|_cc| {
+        Box::new(|cc| {
+            install_fallback_font(&cc.egui_ctx);
             Ok(Box::new(App {
                 lookup: true,
                 ..App::default()
             }))
         }),
     )
+}
+
+/// egui's built-in fonts miss glyphs such as "→", "°", "′" and "″" that the
+/// object labels and notes use. Append the bundled DejaVu font as a fallback
+/// to every font family so they render instead of showing boxes.
+fn install_fallback_font(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "dejavu-fallback".to_owned(),
+        Arc::new(egui::FontData::from_static(xisf2png::post::bundled_font_bytes())),
+    );
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("dejavu-fallback".to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
+
+/// Fixed width of the label column in the form (wide enough for
+/// "Output folder" so all three fields start at the same x).
+const LABEL_WIDTH: f32 = 112.0;
+
+/// One form row: "Label  [ text field stretching to fill ]  [Browse…]".
+/// Returns true if the Browse button was clicked.
+fn path_row(ui: &mut egui::Ui, label: &str, text: &mut String, hint: &str) -> bool {
+    let mut browse = false;
+    ui.horizontal(|ui| {
+        // Reserve the full label column regardless of text width so the
+        // three text fields line up, then draw the label inside it.
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(LABEL_WIDTH, ui.spacing().interact_size.y),
+            egui::Sense::hover(),
+        );
+        let mut column = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        column.label(label);
+        // Right-to-left: the button takes its natural size at the right edge,
+        // the text field gets everything that is left.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            browse = ui.button("Browse…").clicked();
+            ui.add(
+                egui::TextEdit::singleline(text)
+                    .hint_text(hint)
+                    .desired_width(ui.available_width()),
+            );
+        });
+    });
+    browse
 }
 
 /// Messages from the worker thread.
@@ -167,61 +222,43 @@ impl eframe::App for App {
 
             // ---- Folders --------------------------------------------------
             ui.add_enabled_ui(!running, |ui| {
-                egui::Grid::new("paths")
-                    .num_columns(3)
-                    .spacing([8.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label("Input folder");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.input_dir)
-                                .hint_text("current folder")
-                                .desired_width(f32::INFINITY),
-                        );
-                        if ui.button("Browse…").clicked() {
-                            if let Some(p) = Self::browse_folder(&self.input_dir) {
-                                self.input_dir = p.display().to_string();
-                            }
-                        }
-                        ui.end_row();
+                ui.spacing_mut().item_spacing.y = 6.0;
 
-                        ui.label("Output folder");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.output_dir)
-                                .hint_text(if self.png_only {
-                                    "same as input (edit PNGs in place)"
-                                } else {
-                                    "same as input (PNGs next to sources)"
-                                })
-                                .desired_width(f32::INFINITY),
-                        );
-                        if ui.button("Browse…").clicked() {
-                            let start = if self.output_dir.trim().is_empty() {
-                                self.input_dir.as_str()
-                            } else {
-                                self.output_dir.as_str()
-                            };
-                            if let Some(p) = Self::browse_folder(start) {
-                                self.output_dir = p.display().to_string();
-                            }
-                        }
-                        ui.end_row();
+                if path_row(ui, "Input folder", &mut self.input_dir, "current folder") {
+                    if let Some(p) = Self::browse_folder(&self.input_dir) {
+                        self.input_dir = p.display().to_string();
+                    }
+                }
 
-                        ui.label("Stamp font");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.font_file)
-                                .hint_text("bundled DejaVu Sans Condensed Bold")
-                                .desired_width(f32::INFINITY),
-                        );
-                        if ui.button("Browse…").clicked() {
-                            if let Some(p) = rfd::FileDialog::new()
-                                .add_filter("Fonts", &["ttf", "otf"])
-                                .pick_file()
-                            {
-                                self.font_file = p.display().to_string();
-                            }
-                        }
-                        ui.end_row();
-                    });
+                let output_hint = if self.png_only {
+                    "same as input (edit PNGs in place)"
+                } else {
+                    "same as input (PNGs next to sources)"
+                };
+                if path_row(ui, "Output folder", &mut self.output_dir, output_hint) {
+                    let start = if self.output_dir.trim().is_empty() {
+                        self.input_dir.clone()
+                    } else {
+                        self.output_dir.clone()
+                    };
+                    if let Some(p) = Self::browse_folder(&start) {
+                        self.output_dir = p.display().to_string();
+                    }
+                }
+
+                if path_row(
+                    ui,
+                    "Stamp font",
+                    &mut self.font_file,
+                    "bundled DejaVu Sans Condensed Bold",
+                ) {
+                    if let Some(p) = rfd::FileDialog::new()
+                        .add_filter("Fonts", &["ttf", "otf"])
+                        .pick_file()
+                    {
+                        self.font_file = p.display().to_string();
+                    }
+                }
 
                 ui.add_space(6.0);
 

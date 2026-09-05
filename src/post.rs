@@ -47,6 +47,13 @@ const SHADOW_OPACITY: f32 = 0.7;
 /// the condensed gothic look originally intended. License: assets/fonts/LICENSE-DejaVu.txt
 static BUNDLED_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSansCondensed-Bold.ttf");
 
+/// The embedded stamp font, also useful as a glyph fallback for the GUI
+/// (arrows, degree signs, primes) since it covers far more of Unicode than
+/// egui's default fonts.
+pub fn bundled_font_bytes() -> &'static [u8] {
+    BUNDLED_FONT
+}
+
 /// Holds the label font; create once and reuse for every image.
 pub struct Stamper {
     font: FontArc,

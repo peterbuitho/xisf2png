@@ -3,6 +3,7 @@
 //! the `xisf2png-gui` desktop app.
 
 pub mod batch;
+pub mod fits;
 pub mod pixels;
 pub mod post;
 pub mod xisf;

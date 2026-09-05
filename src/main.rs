@@ -73,7 +73,7 @@ fn main() -> ExitCode {
     opts.input_dir = PathBuf::from(input_dir.unwrap_or_else(|| ".".to_string()));
     opts.output_dir = output_dir.map(PathBuf::from);
 
-    let ext = opts.input_ext();
+    let kind = opts.input_kind();
     let verb = if opts.png_only { "Processed" } else { "Converted" };
 
     let summary = xisf2png::run(&opts, &AtomicBool::new(false), &mut |p| {
@@ -94,7 +94,7 @@ fn main() -> ExitCode {
     };
 
     if summary.total == 0 {
-        println!("No .{ext} files found.");
+        println!("No {kind} files found.");
         return ExitCode::SUCCESS;
     }
 
@@ -113,10 +113,11 @@ fn main() -> ExitCode {
 
 fn usage() {
     eprintln!(
-        "xisf2png {} - batch convert XISF astronomical images to PNG\n\n\
+        "xisf2png {} - batch convert XISF and FITS astronomical images to PNG\n\n\
          Usage:\n\
          \x20 xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k]\n\
          \x20 xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite]\n\n\
+         Converts every .xisf, .fits, .fit and .fts file found.\n\
          If input_dir is omitted, the current folder is used.\n\
          If output_dir is omitted, PNGs are written next to their source files.\n\n\
          Options:\n\
@@ -125,7 +126,7 @@ fn usage() {
          \x20     --resize4k     scale each PNG to exactly 3840x2160 (aspect kept,\n\
          \x20                    center-cropped, no padding) and stamp the file\n\
          \x20                    name bottom-right\n\
-         \x20     --png-only     skip XISF conversion: take existing .png files in\n\
+         \x20     --png-only     skip XISF/FITS conversion: take existing .png files in\n\
          \x20                    input_dir and only resize/annotate them (implies\n\
          \x20                    --resize4k). Edited in place when output_dir is\n\
          \x20                    omitted, otherwise copied there first.\n\

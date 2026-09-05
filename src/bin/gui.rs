@@ -155,7 +155,7 @@ impl eframe::App for App {
         let running = self.job.is_some();
 
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-            ui.heading("XISF → PNG batch converter");
+            ui.heading("XISF / FITS → PNG batch converter");
             ui.add_space(6.0);
 
             // ---- Folders --------------------------------------------------
@@ -222,7 +222,7 @@ impl eframe::App for App {
                 ui.horizontal_wrapped(|ui| {
                     ui.checkbox(&mut self.recursive, "Recurse into subfolders");
                     ui.checkbox(&mut self.overwrite, "Overwrite existing PNGs");
-                    ui.checkbox(&mut self.png_only, "PNG only (no XISF conversion)")
+                    ui.checkbox(&mut self.png_only, "PNG only (no XISF/FITS conversion)")
                         .on_hover_text(
                             "Take existing .png files and only resize/stamp them. \
                              Implies 4K resize.",
@@ -269,7 +269,7 @@ impl eframe::App for App {
                     if let Some(s) = &self.summary {
                         let verb = if self.png_only { "Processed" } else { "Converted" };
                         let text = if s.total == 0 {
-                            format!("No .{} files found.", self.options().input_ext())
+                            format!("No {} files found.", self.options().input_kind())
                         } else {
                             format!(
                                 "{verb}: {}   Skipped: {}   Failed: {}{}",

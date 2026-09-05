@@ -1,13 +1,14 @@
 # xisf2png
 
-Batch-convert PixInsight **XISF** astronomical images to **PNG**, optionally
-resized to 4K with the file name stamped in the corner. Comes as a command-line
-tool and a small desktop app, both pure Rust with no runtime dependencies, for
-Windows, macOS (universal Intel + Apple Silicon) and Linux.
+Batch-convert **XISF** (PixInsight) and **FITS** astronomical images to
+**PNG**, optionally resized to 4K with the file name stamped in the corner.
+Comes as a command-line tool and a small desktop app, both pure Rust with no
+runtime dependencies, for Windows, macOS (universal Intel + Apple Silicon) and
+Linux.
 
 Each image's full data range is linearly scaled to 0–255 (a plain min/max
-stretch — no STF/MTF astronomical stretch). Only the first `<Image>` in a file
-is converted. Mono and RGB images are supported.
+stretch — no STF/MTF astronomical stretch). Only the first image in a file is
+converted. Mono and RGB images are supported.
 
 ## Install
 
@@ -48,7 +49,8 @@ xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [-
 xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite] [--font <file>]
 ```
 
-If `input_dir` is omitted, the current folder is used. If `output_dir` is
+Every `.xisf`, `.fits`, `.fit` and `.fts` file found is converted. If
+`input_dir` is omitted, the current folder is used. If `output_dir` is
 omitted, PNGs are written next to their source files (or, with `--png-only`,
 edited in place).
 
@@ -57,7 +59,7 @@ edited in place).
 | `-r`, `--recursive` | Recurse into subfolders; the output tree mirrors the input. |
 | `--overwrite`       | Overwrite existing `.png` files (default: skip them).       |
 | `--resize4k`        | Scale each PNG (up or down, aspect ratio kept) to cover 3840×2160, then center-crop to exactly 3840×2160 — no padding — and stamp the file name in the bottom-right corner (48 px, white with a soft shadow). |
-| `--png-only`        | Skip XISF conversion entirely: pick up existing `.png` files in `input_dir` and only run the `--resize4k` step on them (implies `--resize4k`). With no `output_dir` the PNGs are modified in place; with one they are copied there first, honouring `--overwrite`. |
+| `--png-only`        | Skip XISF/FITS conversion entirely: pick up existing `.png` files in `input_dir` and only run the `--resize4k` step on them (implies `--resize4k`). With no `output_dir` the PNGs are modified in place; with one they are copied there first, honouring `--overwrite`. |
 | `--font <file>`     | A `.ttf` / `.otf` font file for the file-name stamp. Default: the bundled DejaVu Sans Condensed Bold. `--font=<file>` also works. |
 | `-V`, `--version`   | Print the version.                                          |
 | `-h`, `--help`      | Show help.                                                  |
@@ -77,11 +79,24 @@ xisf2png --png-only                      # PNGs in the current folder, in place
 
 ## Format support
 
+**XISF** (monolithic `.xisf`, version 1.0):
+
 - Sample formats: `UInt8/16/32/64`, `Float32/64` (not `Complex`).
 - Pixel storage: planar and interleaved (`Normal`); little- and big-endian.
 - Data location: `attachment`, `embedded`, `inline` (base64 / hex).
 - Compression: `zlib`, `lz4`, `lz4hc`, `zstd`, with or without byte-shuffle
   (`+sh`).
+
+**FITS** (`.fits`, `.fit`, `.fts`), image in the primary HDU:
+
+- `BITPIX` 8, 16, 32, 64 (integers, with `BZERO`/`BSCALE` applied, so the
+  usual unsigned-16-bit camera files work) and −32, −64 (floats).
+- `NAXIS` 2 (mono) or 3 with `NAXIS3` = 1 or 3 (RGB planes).
+- Row order: FITS stores the bottom row first, so images are flipped to
+  display orientation by default. Files that carry `ROWORDER = 'TOP-DOWN'`
+  (N.I.N.A., Siril and others) are left as-is.
+- Not supported: images stored in extensions, tile-compressed `.fz` files,
+  and `.fits.gz`.
 
 ## Build from source
 

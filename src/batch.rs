@@ -8,9 +8,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use image::{DynamicImage, GrayImage, ImageFormat, RgbImage};
 
+use crate::fits;
 use crate::pixels;
 use crate::post::Stamper;
 use crate::xisf;
+
+/// Extensions (lower-case) treated as source images in normal mode.
+pub const IMAGE_EXTS: &[&str] = &["xisf", "fits", "fit", "fts"];
+const FITS_EXTS: &[&str] = &["fits", "fit", "fts"];
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -37,12 +42,22 @@ impl Options {
         self.output_dir.as_deref().unwrap_or(&self.input_dir)
     }
 
-    /// File extension that will be scanned for.
-    pub fn input_ext(&self) -> &'static str {
+    /// File extensions that will be scanned for.
+    pub fn input_exts(&self) -> &'static [&'static str] {
         if self.png_only {
-            "png"
+            &["png"]
         } else {
-            "xisf"
+            IMAGE_EXTS
+        }
+    }
+
+    /// Human-readable description of the input file kind, for messages such
+    /// as "No .xisf / .fits files found."
+    pub fn input_kind(&self) -> &'static str {
+        if self.png_only {
+            ".png"
+        } else {
+            ".xisf / .fits"
         }
     }
 
@@ -106,7 +121,7 @@ pub fn run(
     };
 
     let mut files = Vec::new();
-    collect_files(&opts.input_dir, opts.recursive, opts.input_ext(), &mut files);
+    collect_files(&opts.input_dir, opts.recursive, opts.input_exts(), &mut files);
     files.sort_by_key(|p| p.to_string_lossy().to_lowercase());
 
     let mut summary = Summary {
@@ -167,7 +182,12 @@ fn process_one(
             .and_then(|r| r.decode().map_err(std::io::Error::other))
             .map_err(|e| format!("cannot read PNG: {e}"))?
     } else {
-        let data = xisf::read(src).map_err(|e| e.to_string())?;
+        let data = if has_ext(src, FITS_EXTS) {
+            fits::read(src)
+        } else {
+            xisf::read(src)
+        }
+        .map_err(|e| e.to_string())?;
         let image8 = pixels::to_image(&data).map_err(|e| e.to_string())?;
         image8_to_dynamic(image8)?
     };
@@ -204,9 +224,9 @@ fn image8_to_dynamic(img: pixels::Image8) -> Result<DynamicImage, String> {
     }
 }
 
-/// Recursively (or not) gather files with extension `ext` (case-insensitive)
-/// under `dir`.
-pub fn collect_files(dir: &Path, recursive: bool, ext: &str, out: &mut Vec<PathBuf>) {
+/// Recursively (or not) gather files whose extension (case-insensitive) is
+/// one of `exts`, under `dir`.
+pub fn collect_files(dir: &Path, recursive: bool, exts: &[&str], out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -217,17 +237,18 @@ pub fn collect_files(dir: &Path, recursive: bool, ext: &str, out: &mut Vec<PathB
         };
         if file_type.is_dir() {
             if recursive {
-                collect_files(&path, recursive, ext, out);
+                collect_files(&path, recursive, exts, out);
             }
-        } else if file_type.is_file()
-            && path
-                .extension()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s.eq_ignore_ascii_case(ext))
-        {
+        } else if file_type.is_file() && has_ext(&path, exts) {
             out.push(path);
         }
     }
+}
+
+fn has_ext(path: &Path, exts: &[&str]) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| exts.iter().any(|e| s.eq_ignore_ascii_case(e)))
 }
 
 /// True when both paths refer to the same existing file (handles `.` vs `./`,

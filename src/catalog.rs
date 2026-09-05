@@ -189,6 +189,7 @@ pub const POPULAR_NAMES: &[(&str, &str)] = &[
     ("M 108", "Surfboard Galaxy"),
     // Nebulae (NGC / IC / Sharpless / Barnard / others)
     ("NGC 281", "Pacman Nebula"),
+    ("NGC 1333", "Embryo Nebula"),
     ("NGC 1360", "Robin's Egg Nebula"),
     ("NGC 1435", "Merope Nebula"),
     ("NGC 1491", "Fossil Footprint Nebula"),
@@ -431,6 +432,7 @@ mod tests {
         assert_eq!(popular_name(&["M  42".into()]).as_deref(), Some("Orion Nebula"));
         assert_eq!(popular_name(&["NGC 2682".into(), "M 67".into()]).as_deref(), Some("Golden Eye Cluster"));
         assert_eq!(popular_name(&["NGC 1491".into()]).as_deref(), Some("Fossil Footprint Nebula"));
+        assert_eq!(popular_name(&["NGC 1333".into()]).as_deref(), Some("Embryo Nebula"));
         assert_eq!(popular_name(&["SH 2-206".into()]).as_deref(), Some("Fossil Footprint Nebula"));
         // Every table entry must be in canonical pretty form so it matches.
         for (d, _) in POPULAR_NAMES {

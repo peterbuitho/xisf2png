@@ -3213,7 +3213,7 @@ checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 
 [[package]]
 name = "xisf2png"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ab_glyph",
  "base64 0.22.1",

@@ -11,25 +11,29 @@ is converted. Mono and RGB images are supported.
 
 ```
 xisf2png <input_dir> [output_dir] [--recursive|-r] [--overwrite] [--resize4k]
+xisf2png <input_dir> [output_dir] --png-only [--recursive|-r] [--overwrite]
 ```
 
-If `output_dir` is omitted, PNGs are written next to their source files.
+If `output_dir` is omitted, PNGs are written next to their source files (or,
+with `--png-only`, edited in place).
 
 | Option              | Meaning                                                     |
 | ------------------- | ----------------------------------------------------------- |
 | `-r`, `--recursive` | Recurse into subfolders; the output tree mirrors the input. |
 | `--overwrite`       | Overwrite existing `.png` files (default: skip them).       |
 | `--resize4k`        | Scale each PNG (up or down, aspect ratio kept) to cover 3840×2160, then center-crop to exactly 3840×2160 — no padding — and stamp the file name in the bottom-right corner (Franklin Gothic Medium Cond, 48 pt, white). Requires [ImageMagick](https://imagemagick.org) (`magick`) on `PATH`; if it's missing or fails, conversion continues and a warning is printed at the end. |
+| `--png-only`        | Skip XISF conversion entirely: pick up existing `.png` files in `input_dir` and only run the `--resize4k` step on them (implies `--resize4k`). With no `output_dir` the PNGs are modified in place; with one they are copied there first, honouring `--overwrite`. |
 | `-h`, `--help`      | Show help.                                                  |
 
 Per-file output lines: `OK <path>`, `SKIP <path>`, `ERROR <path>: <reason>`.
 A bad file is reported and the batch continues. Exit code is `1` if any file
 failed, `2` for a usage error, `0` otherwise.
 
-Example:
+Examples:
 
 ```
 xisf2png "D:\captures" "D:\previews" --recursive
+xisf2png "D:\previews" --png-only --recursive
 ```
 
 ## Format support

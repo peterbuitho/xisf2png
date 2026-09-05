@@ -16,12 +16,14 @@ fn main() -> ExitCode {
     let mut recursive = false;
     let mut overwrite = false;
     let mut resize4k = false;
+    let mut png_only = false;
 
     for a in &args {
         match a.as_str() {
             "--recursive" | "-r" => recursive = true,
             "--overwrite" => overwrite = true,
             "--resize4k" | "-resize4k" => resize4k = true,
+            "--png-only" => png_only = true,
             "--help" | "-h" | "/?" => {
                 usage();
                 return ExitCode::SUCCESS;
@@ -49,7 +51,14 @@ fn main() -> ExitCode {
         usage();
         return ExitCode::from(2);
     };
-    // Output defaults to the input folder: PNGs land next to their sources.
+    // --png-only exists purely to run the 4K post-processing on PNGs that
+    // already exist, so it implies --resize4k.
+    if png_only {
+        resize4k = true;
+    }
+
+    // Output defaults to the input folder: PNGs land next to their sources
+    // (or, with --png-only, are edited in place).
     let output_dir = output_dir.unwrap_or_else(|| input_dir.clone());
 
     let input_dir = Path::new(&input_dir);
@@ -60,8 +69,9 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
+    let ext = if png_only { "png" } else { "xisf" };
     let mut files: Vec<PathBuf> = Vec::new();
-    collect_xisf(input_dir, recursive, &mut files);
+    collect_files(input_dir, recursive, ext, &mut files);
 
     files.sort_by(|a, b| {
         a.to_string_lossy()
@@ -70,7 +80,7 @@ fn main() -> ExitCode {
     });
 
     if files.is_empty() {
-        println!("No .xisf files found.");
+        println!("No .{ext} files found.");
         return ExitCode::SUCCESS;
     }
 
@@ -80,11 +90,23 @@ fn main() -> ExitCode {
     let mut magick_available = true;
 
     for file in &files {
+        // In --png-only mode ImageMagick does all the work, so once it is
+        // known to be missing there is nothing useful left to do.
+        if png_only && !magick_available {
+            break;
+        }
+
         let rel = file.strip_prefix(input_dir).unwrap_or(file);
         let dest = output_dir.join(rel).with_extension("png");
         let rel_display = rel.display();
 
-        match convert_one(file, &dest, overwrite) {
+        let result = if png_only {
+            stage_png(file, &dest, overwrite)
+        } else {
+            convert_one(file, &dest, overwrite)
+        };
+
+        match result {
             Ok(Outcome::Converted) => {
                 println!("OK    {rel_display}");
                 converted += 1;
@@ -104,7 +126,8 @@ fn main() -> ExitCode {
     }
 
     println!();
-    println!("Converted: {converted}   Skipped: {skipped}   Failed: {failed}");
+    let verb = if png_only { "Processed" } else { "Converted" };
+    println!("{verb}: {converted}   Skipped: {skipped}   Failed: {failed}");
 
     if !warnings.is_empty() {
         println!();
@@ -120,8 +143,9 @@ fn main() -> ExitCode {
     }
 }
 
-/// Recursively (or not) gather `*.xisf` files under `dir`.
-fn collect_xisf(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) {
+/// Recursively (or not) gather files with extension `ext` (case-insensitive)
+/// under `dir`.
+fn collect_files(dir: &Path, recursive: bool, ext: &str, out: &mut Vec<PathBuf>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -134,13 +158,13 @@ fn collect_xisf(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) {
         };
         if file_type.is_dir() {
             if recursive {
-                collect_xisf(&path, recursive, out);
+                collect_files(&path, recursive, ext, out);
             }
         } else if file_type.is_file()
             && path
                 .extension()
                 .and_then(|s| s.to_str())
-                .is_some_and(|s| s.eq_ignore_ascii_case("xisf"))
+                .is_some_and(|s| s.eq_ignore_ascii_case(ext))
         {
             out.push(path);
         }
@@ -190,8 +214,8 @@ fn resize_and_label(dest: &Path, warnings: &mut Vec<String>, magick_available: &
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             *magick_available = false;
             warnings.push(
-                "ImageMagick ('magick') not found on PATH - PNGs were converted \
-                 but not resized/labelled."
+                "ImageMagick ('magick') not found on PATH - PNGs were not \
+                 resized/labelled."
                     .into(),
             );
         }
@@ -233,11 +257,43 @@ fn convert_one(
     Ok(Outcome::Converted)
 }
 
+/// `--png-only`: get an existing PNG into place at `dest` so the 4K
+/// post-processing can run on it. If `dest` is the source itself (no separate
+/// output dir) the file is edited in place; otherwise it is copied first,
+/// honouring `--overwrite` like a normal conversion would.
+fn stage_png(
+    src: &Path,
+    dest: &Path,
+    overwrite: bool,
+) -> Result<Outcome, Box<dyn std::error::Error>> {
+    if is_same_file(src, dest) {
+        return Ok(Outcome::Converted);
+    }
+    if dest.exists() && !overwrite {
+        return Ok(Outcome::Skipped);
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(src, dest)?;
+    Ok(Outcome::Converted)
+}
+
+/// True when both paths refer to the same existing file (handles differences
+/// like `.` vs `./`, trailing separators, or drive-letter case).
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 fn usage() {
     eprintln!(
         "xisf2png - batch convert XISF astronomical images to PNG\n\n\
          Usage:\n\
-         \x20 xisf2png <input_dir> [output_dir] [--recursive|-r] [--overwrite] [--resize4k]\n\n\
+         \x20 xisf2png <input_dir> [output_dir] [--recursive|-r] [--overwrite] [--resize4k]\n\
+         \x20 xisf2png <input_dir> [output_dir] --png-only [--recursive|-r] [--overwrite]\n\n\
          If output_dir is omitted, PNGs are written next to their source files.\n\n\
          Options:\n\
          \x20 -r, --recursive   recurse into subfolders (output mirrors structure)\n\
@@ -245,6 +301,10 @@ fn usage() {
          \x20     --resize4k     scale each PNG to exactly 3840x2160 (aspect kept,\n\
          \x20                    center-cropped, no padding) and stamp the file\n\
          \x20                    name bottom-right (requires ImageMagick on PATH)\n\
+         \x20     --png-only     skip XISF conversion: take existing .png files in\n\
+         \x20                    input_dir and only resize/annotate them (implies\n\
+         \x20                    --resize4k). Edited in place when output_dir is\n\
+         \x20                    omitted, otherwise copied there first.\n\
          \x20 -h, --help        show this help"
     );
 }

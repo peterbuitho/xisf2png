@@ -1,12 +1,19 @@
 [package]
 name = "xisf2png"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Batch convert XISF astronomical images to PNG"
+
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "xisf2png"
 path = "src/main.rs"
+
+[[bin]]
+name = "xisf2png-gui"
+path = "src/bin/gui.rs"
 
 [dependencies]
 roxmltree = "0.20"
@@ -15,7 +22,10 @@ hex = "0.4"
 flate2 = "1"
 lz4_flex = "0.11"
 ruzstd = "0.7"
-png = "0.17"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ab_glyph = "0.2"
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster", "common-controls-v6"] }
 
 [profile.release]
 lto = true

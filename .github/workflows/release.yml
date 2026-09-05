@@ -1,9 +1,10 @@
-# Builds xisf2png for Windows, macOS (universal Intel + Apple Silicon) and
-# Linux, and attaches the binaries to a GitHub Release.
+# Builds the xisf2png CLI and GUI for Windows, macOS (universal Intel + Apple
+# Silicon, with a double-clickable .app bundle) and Linux, and attaches the
+# archives to a GitHub Release.
 #
 # Triggered by pushing a tag like `v0.2.0`. Can also be run manually from the
 # Actions tab ("Run workflow") to check that all targets still build; in that
-# case the binaries are available as workflow artifacts but no release is made.
+# case the archives are available as workflow artifacts but no release is made.
 name: Release
 
 on:
@@ -27,62 +28,131 @@ jobs:
         include:
           - name: windows-x86_64
             os: windows-latest
-            target: x86_64-pc-windows-msvc
+            cli_target: x86_64-pc-windows-msvc
+            gui_target: x86_64-pc-windows-msvc
           - name: linux-x86_64
-            os: ubuntu-latest
-            # musl = fully static binary, runs on any distro regardless of glibc version.
-            target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            # CLI: musl = fully static, runs on any distro regardless of glibc.
+            # GUI: needs the system's graphics stack, so it is a normal glibc build.
+            cli_target: x86_64-unknown-linux-musl
+            gui_target: x86_64-unknown-linux-gnu
           - name: linux-aarch64
             # Native ARM64 runner (free for public repos), so no cross-linker is needed.
             os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            cli_target: aarch64-unknown-linux-musl
+            gui_target: aarch64-unknown-linux-gnu
           - name: macos-universal
             os: macos-latest
             # Pseudo-target: both Apple targets are built and merged with lipo below.
-            target: universal-apple-darwin
+            cli_target: universal-apple-darwin
+            gui_target: universal-apple-darwin
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Linux build dependencies (GUI)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwayland-dev libxkbcommon-dev
+
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target == 'universal-apple-darwin' && 'x86_64-apple-darwin,aarch64-apple-darwin' || matrix.target }}
+          targets: ${{ matrix.cli_target == 'universal-apple-darwin' && 'x86_64-apple-darwin,aarch64-apple-darwin' || format('{0},{1}', matrix.cli_target, matrix.gui_target) }}
 
       - name: Build
-        if: matrix.target != 'universal-apple-darwin'
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        if: matrix.cli_target != 'universal-apple-darwin'
+        shell: bash
+        run: |
+          cargo build --release --locked --bin xisf2png     --target ${{ matrix.cli_target }}
+          cargo build --release --locked --bin xisf2png-gui --target ${{ matrix.gui_target }}
 
       - name: Build (macOS universal)
-        if: matrix.target == 'universal-apple-darwin'
+        if: matrix.cli_target == 'universal-apple-darwin'
         run: |
           cargo build --release --locked --target x86_64-apple-darwin
           cargo build --release --locked --target aarch64-apple-darwin
-          mkdir -p target/${{ matrix.target }}/release
-          lipo -create -output target/${{ matrix.target }}/release/xisf2png \
-            target/x86_64-apple-darwin/release/xisf2png \
-            target/aarch64-apple-darwin/release/xisf2png
-          lipo -info target/${{ matrix.target }}/release/xisf2png
+          out=target/universal-apple-darwin/release
+          mkdir -p "$out"
+          for bin in xisf2png xisf2png-gui; do
+            lipo -create -output "$out/$bin" \
+              "target/x86_64-apple-darwin/release/$bin" \
+              "target/aarch64-apple-darwin/release/$bin"
+            lipo -info "$out/$bin"
+          done
 
       - name: Smoke test
         shell: bash
-        run: target/${{ matrix.target }}/release/xisf2png --help
+        run: target/${{ matrix.cli_target }}/release/xisf2png --version
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $asset = "xisf2png-${{ matrix.name }}.zip"
-          Compress-Archive -Path "target/${{ matrix.target }}/release/xisf2png.exe", README.md -DestinationPath $asset
+          Compress-Archive -DestinationPath $asset -Path `
+            "target/${{ matrix.cli_target }}/release/xisf2png.exe", `
+            "target/${{ matrix.gui_target }}/release/xisf2png-gui.exe", `
+            README.md
           "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Package (macOS / Linux)
-        if: runner.os != 'Windows'
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           asset="xisf2png-${{ matrix.name }}.tar.gz"
           tar -czf "$asset" \
-            -C "target/${{ matrix.target }}/release" xisf2png \
+            -C "target/${{ matrix.cli_target }}/release" xisf2png \
+            -C "$GITHUB_WORKSPACE/target/${{ matrix.gui_target }}/release" xisf2png-gui \
             -C "$GITHUB_WORKSPACE" README.md
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: Package (macOS .app + CLI)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          version=$(cargo pkgid | sed -E 's/.*[#@]//')
+          bins=target/universal-apple-darwin/release
+          app=dist/xisf2png.app
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+
+          # Icon: .icns from the 1024px PNG in the repo.
+          iconset=$(mktemp -d)/xisf2png.iconset
+          mkdir -p "$iconset"
+          for size in 16 32 128 256 512; do
+            sips -z $size $size assets/icon.png --out "$iconset/icon_${size}x${size}.png" >/dev/null
+            sips -z $((size*2)) $((size*2)) assets/icon.png --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+          done
+          iconutil -c icns "$iconset" -o "$app/Contents/Resources/xisf2png.icns"
+
+          cp "$bins/xisf2png-gui" "$app/Contents/MacOS/xisf2png-gui"
+          cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>               <string>xisf2png</string>
+            <key>CFBundleDisplayName</key>        <string>xisf2png</string>
+            <key>CFBundleIdentifier</key>         <string>io.github.peterbuitho.xisf2png</string>
+            <key>CFBundleVersion</key>            <string>${version}</string>
+            <key>CFBundleShortVersionString</key> <string>${version}</string>
+            <key>CFBundleExecutable</key>         <string>xisf2png-gui</string>
+            <key>CFBundleIconFile</key>           <string>xisf2png</string>
+            <key>CFBundlePackageType</key>        <string>APPL</string>
+            <key>LSMinimumSystemVersion</key>     <string>11.0</string>
+            <key>LSApplicationCategoryType</key>  <string>public.app-category.photography</string>
+            <key>NSHighResolutionCapable</key>    <true/>
+          </dict>
+          </plist>
+          EOF
+
+          # Ad-hoc signature: required for Apple Silicon to launch the binary at all.
+          codesign --force --deep --sign - "$app"
+          codesign --verify --verbose "$app"
+
+          cp "$bins/xisf2png" README.md dist/
+          asset="xisf2png-${{ matrix.name }}.zip"
+          (cd dist && zip -r -y "../$asset" .)
           echo "ASSET=$asset" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4

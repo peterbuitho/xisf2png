@@ -339,7 +339,15 @@ impl Resolver {
         let query = crate::catalog::caldwell_target(query).unwrap_or(query);
         if !self.cache.contains_key(&key) {
             let agent = self.agent.as_ref()?;
-            match fetch(agent, query) {
+            let mut result = fetch(agent, query);
+            // Sesame does not take every abbreviation we use ("Cr 399" is
+            // "Collinder 399" to it); retry with the spelled-out catalogue.
+            if matches!(result, Ok(None)) {
+                if let Some(alt) = spelled_out(query) {
+                    result = fetch(agent, &alt);
+                }
+            }
+            match result {
                 Ok(info) => {
                     self.cache.insert(key.clone(), info);
                 }
@@ -351,6 +359,21 @@ impl Resolver {
         }
         self.cache.get(&key).and_then(|o| o.as_ref())
     }
+}
+
+/// Alternative spelling of a designation for the name resolver, if the
+/// abbreviated form we print is not one it accepts.
+fn spelled_out(query: &str) -> Option<String> {
+    let q = collapse_ws(query);
+    let (prefix, rest) = q.split_once(' ')?;
+    let long = match prefix.to_ascii_uppercase().as_str() {
+        "CR" => "Collinder",
+        "MEL" => "Melotte",
+        "CED" => "Cederblad",
+        "B" => "Barnard",
+        _ => return None,
+    };
+    Some(format!("{long} {rest}"))
 }
 
 fn fetch(agent: &ureq::Agent, query: &str) -> Result<Option<ObjectInfo>, String> {

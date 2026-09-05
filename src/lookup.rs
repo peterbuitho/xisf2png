@@ -106,12 +106,22 @@ pub struct ObjectInfo {
 }
 
 impl ObjectInfo {
-    /// Does `designation` (any spacing/case) refer to this object?
+    /// Does `designation` (any spacing/case) refer to this object? Checks
+    /// genuine SIMBAD aliases, plus the built-in Caldwell number (kept out of
+    /// `aliases_norm` itself: a Caldwell entry can list *several* physical
+    /// objects, e.g. C14 = NGC 869 & NGC 884, and folding it into the alias
+    /// set would make [`Self::same_object`] treat those two as one object).
     pub fn matches(&self, designation: &str) -> bool {
-        self.aliases_norm.contains(&normalize(designation))
+        let norm = normalize(designation);
+        self.aliases_norm.contains(&norm)
+            || crate::catalog::caldwell_number(&self.designations)
+                .is_some_and(|n| norm == normalize(&format!("C {n}")))
     }
 
-    /// Do the two records describe the same object (share any identifier)?
+    /// Do the two records describe the same object (share any genuine SIMBAD
+    /// identifier)? Deliberately ignores the Caldwell number for the reason
+    /// given on [`Self::matches`]: two different members of one multi-object
+    /// Caldwell entry must not compare equal here.
     pub fn same_object(&self, other: &ObjectInfo) -> bool {
         self.aliases_norm.intersection(&other.aliases_norm).next().is_some()
     }
@@ -177,17 +187,17 @@ impl ObjectInfo {
                 }
             }
         }
-        let mut aliases_norm: HashSet<String> = aliases.iter().map(|a| normalize(a)).collect();
+        let aliases_norm: HashSet<String> = aliases.iter().map(|a| normalize(a)).collect();
 
         // Caldwell number from the built-in table, slotted in right after
-        // any Messier id so it shows up early in the second line.
+        // any Messier id so it shows up early in the second line. Not added
+        // to `aliases_norm` - see the comment on `matches`/`same_object`.
         if let Some(n) = crate::catalog::caldwell_number(&designations) {
             let c = format!("C {n}");
             if !designations.contains(&c) {
                 let pos = designations.iter().take_while(|d| d.starts_with("M ")).count();
-                designations.insert(pos, c.clone());
+                designations.insert(pos, c);
             }
-            aliases_norm.insert(normalize(&c));
         }
 
         // Curated / user names beat SIMBAD's "NAME" aliases, which are often
@@ -812,6 +822,42 @@ pub fn identify(
                 };
                 let sep = c.separation_deg(ra, dec);
                 if sep <= c.tolerance_deg() {
+                    // The name fits. If the named object is inside the frame
+                    // but a *different* notable object sits at the centre,
+                    // both are in the picture: stamp both ("Heart Nebula
+                    // (IC 1805) & Fish Head Nebula (NGC 896)").
+                    if sep <= c.search_radius_deg() {
+                        if let Some(mut centre) =
+                            resolver.nearby(c.ra_deg, c.dec_deg, c.search_radius_deg()).cloned()
+                        {
+                            resolver.adopt_companion_nebula(&mut centre);
+                            if !centre.same_object(&named.info)
+                                && centre.is_notable()
+                                && !same_region(&centre, &named.info)
+                            {
+                                let what = named
+                                    .preferred
+                                    .clone()
+                                    .unwrap_or_else(|| named.info.main_id.clone());
+                                let mut note = format!(
+                                    "frame is centred on {}; {what} is {sep:.1}° off-centre, both in the field",
+                                    actual_title(&centre)
+                                );
+                                if let Some(n) = named.note {
+                                    note = format!("{n}; {note}");
+                                }
+                                return Identification {
+                                    label: compose_pair(
+                                        &named.info,
+                                        named.preferred.as_deref(),
+                                        &centre,
+                                        &c,
+                                    ),
+                                    note: Some(note),
+                                };
+                            }
+                        }
+                    }
                     return Identification {
                         label: compose(&named.info, named.preferred.as_deref()),
                         note: named.note,
@@ -943,10 +989,50 @@ fn actual_title(info: &ObjectInfo) -> String {
 /// Build the two-line label: "Common Name (Designation)" over
 /// "other ids · type · coordinates".
 fn compose(info: &ObjectInfo, preferred: Option<&str>) -> Label {
-    // Title designation: what the user wrote, else the best-known catalogue
-    // id. Caldwell numbers are less recognisable than NGC/IC, so they only
-    // lead the title when the user used them; otherwise they go to line two.
-    let designation = preferred
+    let designation = title_designation(info, preferred);
+    let title = title_of(info, &designation);
+    let mut parts = object_parts(info, &designation, 3);
+    let coords = info.coordinates();
+    if !coords.is_empty() {
+        parts.push(coords);
+    }
+    Label {
+        title,
+        subtitle: (!parts.is_empty()).then(|| parts.join("  ·  ")),
+    }
+}
+
+/// Two objects sharing one frame: "Heart Nebula (IC 1805) & Fish Head Nebula
+/// (NGC 896)", or, when they share a name, "Leo Triplet (M 65 & M 66)". The
+/// second line carries both objects' ids and types, then the image centre.
+fn compose_pair(first: &ObjectInfo, first_pref: Option<&str>, second: &ObjectInfo, centre: &SkyCoords) -> Label {
+    let d1 = title_designation(first, first_pref);
+    let d2 = title_designation(second, None);
+    let title = match (&first.common_name, &second.common_name) {
+        (Some(a), Some(b)) if normalize(a) == normalize(b) => format!("{a} ({d1} & {d2})"),
+        _ => format!("{} & {}", title_of(first, &d1), title_of(second, &d2)),
+    };
+    let mut parts = vec![
+        object_parts(first, &d1, 2).join("  ·  "),
+        object_parts(second, &d2, 2).join("  ·  "),
+    ];
+    parts.retain(|p| !p.is_empty());
+    parts.push(format!(
+        "RA {}  Dec {}",
+        fmt_ra(centre.ra_deg),
+        fmt_dec(centre.dec_deg)
+    ));
+    Label {
+        title,
+        subtitle: Some(parts.join("   +   ")),
+    }
+}
+
+/// Title designation: what the user wrote, else the best-known catalogue id.
+/// Caldwell numbers are less recognisable than NGC/IC, so they only lead the
+/// title when the user used them; otherwise they go to line two.
+fn title_designation(info: &ObjectInfo, preferred: Option<&str>) -> String {
+    preferred
         .map(str::to_string)
         .or_else(|| {
             info.designations
@@ -955,35 +1041,64 @@ fn compose(info: &ObjectInfo, preferred: Option<&str>) -> Label {
                 .or_else(|| info.designations.first())
                 .cloned()
         })
-        .unwrap_or_else(|| info.main_id.clone());
+        .unwrap_or_else(|| info.main_id.clone())
+}
 
-    let title = match &info.common_name {
-        Some(name) if normalize(name) != normalize(&designation) => {
-            format!("{name} ({designation})")
-        }
-        _ => designation.clone(),
-    };
+/// "Common Name (Designation)", or just the designation.
+fn title_of(info: &ObjectInfo, designation: &str) -> String {
+    match &info.common_name {
+        Some(name) if normalize(name) != normalize(designation) => format!("{name} ({designation})"),
+        _ => designation.to_string(),
+    }
+}
 
-    let key = normalize(&designation);
+/// Up to `max_ids` other catalogue ids plus the type, for the second line.
+fn object_parts(info: &ObjectInfo, designation: &str, max_ids: usize) -> Vec<String> {
+    let key = normalize(designation);
     let mut parts: Vec<String> = info
         .designations
         .iter()
         .filter(|d| normalize(d) != key)
-        .take(3)
+        .take(max_ids)
         .cloned()
         .collect();
     let ty = info.type_description();
     if !ty.is_empty() {
         parts.push(ty);
     }
-    let coords = info.coordinates();
-    if !coords.is_empty() {
-        parts.push(coords);
-    }
+    parts
+}
 
-    Label {
-        title,
-        subtitle: (!parts.is_empty()).then(|| parts.join("  ·  ")),
+/// Do two records describe the same region under slightly different names,
+/// e.g. IC 1396 "Elephant's Trunk Nebula" vs SIMBAD's separate "Elephant
+/// Trunk Nebula" entry? Compares name word sets (possessives stripped): a
+/// shared subset counts as the same region. Identical names do *not* count
+/// (they are paired as "Name (A & B)" instead).
+fn same_region(a: &ObjectInfo, b: &ObjectInfo) -> bool {
+    let words = |s: &str| -> HashSet<String> {
+        s.split_whitespace()
+            .map(|w| {
+                w.trim_end_matches("'s")
+                    .trim_end_matches("’s")
+                    .chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .collect::<String>()
+                    .to_ascii_lowercase()
+            })
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    match (&a.common_name, &b.common_name) {
+        (Some(x), Some(y)) => {
+            if normalize(x) == normalize(y) {
+                return false;
+            }
+            let (wx, wy) = (words(x), words(y));
+            let shared = wx.intersection(&wy).count();
+            // "Heart Nebula" vs "Fish Head Nebula" share only "nebula".
+            shared >= 2 || wx.is_subset(&wy) || wy.is_subset(&wx)
+        }
+        _ => false,
     }
 }
 
@@ -1263,6 +1378,46 @@ mod tests {
         let label = compose(&g, None);
         assert_eq!(label.title, "NGC 2403");
         assert!(label.subtitle.as_deref().unwrap().starts_with("C 7  ·  UGC 3918  ·  Spiral galaxy"));
+    }
+
+    #[test]
+    fn pairs_and_same_region() {
+        let mk = |main: &str, aliases: &[&str], otype: &str, ra: f64, dec: f64| {
+            ObjectInfo::from_aliases(
+                main.to_string(),
+                aliases.iter().map(|s| s.to_string()).collect(),
+                otype.to_string(),
+                None,
+                Some(ra),
+                Some(dec),
+            )
+        };
+        let centre = SkyCoords { ra_deg: 170.0, dec_deg: 13.0, fov_radius_deg: Some(0.5), solved: true };
+
+        // Same name -> merged designations.
+        let m65 = mk("M 65", &["M 65", "NGC 3623"], "GiP", 169.73, 13.09);
+        let m66 = mk("M 66", &["M 66", "NGC 3627"], "AGN", 170.06, 12.99);
+        assert!(!same_region(&m65, &m66));
+        let l = compose_pair(&m65, Some("M 65"), &m66, &centre);
+        assert_eq!(l.title, "Leo Triplet (M 65 & M 66)");
+        assert!(l.subtitle.as_deref().unwrap().starts_with("NGC 3623  ·  Galaxy in a pair   +   NGC 3627"));
+
+        // Different names -> "A & B".
+        let heart = mk("IC 1805", &["IC 1805"], "OpC", 38.21, 61.47);
+        let fish = mk("NGC 896", &["NGC 896"], "HII", 36.4, 62.0);
+        assert!(!same_region(&heart, &fish));
+        assert_eq!(
+            compose_pair(&heart, Some("IC 1805"), &fish, &centre).title,
+            "Heart Nebula (IC 1805) & Fish Head Nebula (NGC 896)"
+        );
+
+        // Same region under a variant name -> no pairing.
+        let ic1396 = mk("IC 1396", &["IC 1396"], "OpC", 324.7, 57.5);
+        let trunk = mk("Elephant Trunk Nebula", &["NAME Elephant Trunk Nebula"], "HII", 324.0, 57.5);
+        assert!(same_region(&ic1396, &trunk));
+        let a = mk("A", &["NAME North America Nebula"], "HII", 0.0, 0.0);
+        let b = mk("B", &["NAME North America"], "HII", 0.0, 0.0);
+        assert!(same_region(&a, &b));
     }
 
     #[test]

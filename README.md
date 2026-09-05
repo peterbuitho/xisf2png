@@ -145,6 +145,11 @@ service (SIMBAD), which understands free-form names too (`OBJECT = 'Pleiades'`
 gives "Pleiades (M 45)"). The rules:
 
 - Header and file name disagree → the file name wins, with a `note:` line.
+- The named object is inside the frame but a *different* notable object sits
+  at the image centre → both are in the picture, so both are stamped:
+  "Heart Nebula (IC 1805) & Fish Head Nebula (NGC 896)", or, when they share
+  a name, "Leo Triplet (M 65 & M 66)" / "Double Cluster (NGC 869 & NGC 884)".
+  The second line lists both objects' ids and types and the image centre.
 - The named object is more than 2° (plus half the field of view) from where
   the frame points → SIMBAD is asked what deep-sky object actually sits at
   the image centre. If a prominent one is there (Messier, NGC, IC, Sharpless,

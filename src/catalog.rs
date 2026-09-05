@@ -191,6 +191,7 @@ pub const POPULAR_NAMES: &[(&str, &str)] = &[
     ("M 108", "Surfboard Galaxy"),
     // Nebulae (NGC / IC / Sharpless / Barnard / others)
     ("NGC 281", "Pacman Nebula"),
+    ("NGC 896", "Fish Head Nebula"), // brightest part of IC 1795
     ("NGC 1333", "Embryo Nebula"),
     ("NGC 1360", "Robin's Egg Nebula"),
     ("NGC 1435", "Merope Nebula"),

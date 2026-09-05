@@ -230,6 +230,7 @@ pub const POPULAR_NAMES: &[(&str, &str)] = &[
     ("NGC 7008", "Fetus Nebula"),
     ("NGC 7027", "Jewel Bug Nebula"),
     ("NGC 7380", "Wizard Nebula"),
+    ("NGC 7822", "Teddy Bear Nebula"),
     ("IC 63", "Ghost of Cassiopeia"),
     ("IC 410", "Tadpoles Nebula"),
     ("IC 417", "Spider Nebula"),
@@ -306,6 +307,7 @@ pub const POPULAR_NAMES: &[(&str, &str)] = &[
     ("NGC 3293", "Gem Cluster"),
     ("NGC 6811", "Hole in a Cluster"),
     ("NGC 6819", "Foxhead Cluster"),
+    ("NGC 6939", "Ghost Bush Cluster"),
     ("NGC 7789", "Caroline's Rose"),
     ("Mel 20", "Alpha Persei Cluster"),
     ("Mel 111", "Coma Star Cluster"),
@@ -442,6 +444,8 @@ mod tests {
         assert_eq!(popular_name(&["NGC 3521".into()]).as_deref(), Some("Bubble Galaxy"));
         assert_eq!(popular_name(&["NGC 6572".into()]).as_deref(), Some("Blue Racquetball Nebula"));
         assert_eq!(popular_name(&["NGC 7027".into()]).as_deref(), Some("Jewel Bug Nebula"));
+        assert_eq!(popular_name(&["NGC 7822".into()]).as_deref(), Some("Teddy Bear Nebula"));
+        assert_eq!(popular_name(&["NGC 6939".into()]).as_deref(), Some("Ghost Bush Cluster"));
         assert_eq!(popular_name(&["IC 4406".into()]).as_deref(), Some("Retina Nebula"));
         assert_eq!(popular_name(&["M 65".into()]).as_deref(), Some("Leo Triplet"));
         assert_eq!(popular_name(&["M 66".into()]).as_deref(), Some("Leo Triplet"));

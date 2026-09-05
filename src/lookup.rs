@@ -66,6 +66,9 @@ struct Catalog {
 
 const CATALOGS: &[Catalog] = &[
     Catalog { keys: &["M", "MESSIER"], pretty: "M ", simbad: &["M "], max: 110, adjacent_only: true },
+    // Caldwell is not in SIMBAD: no alias prefixes; numbers come from the
+    // built-in table in `catalog.rs` and queries are translated there.
+    Catalog { keys: &["C", "CALDWELL"], pretty: "C ", simbad: &[], max: 109, adjacent_only: true },
     Catalog { keys: &["NGC"], pretty: "NGC ", simbad: &["NGC "], max: 7840, adjacent_only: false },
     Catalog { keys: &["IC"], pretty: "IC ", simbad: &["IC "], max: 5386, adjacent_only: false },
     Catalog { keys: &["SH2", "SH"], pretty: "Sh2-", simbad: &["SH 2-", "SH2-"], max: 313, adjacent_only: false },
@@ -111,12 +114,12 @@ impl ObjectInfo {
         self.aliases_norm.intersection(&other.aliases_norm).next().is_some()
     }
 
-    /// Notable enough to override a name the user gave: Messier, NGC, IC,
-    /// Sharpless or Barnard, or anything with a common name. An LBN/LDN entry
-    /// near the pointing position is not evidence the user mislabelled the
-    /// image.
+    /// Notable enough to override a name the user gave: Messier, Caldwell,
+    /// NGC, IC, Sharpless or Barnard, or anything with a common name. An
+    /// LBN/LDN entry near the pointing position is not evidence the user
+    /// mislabelled the image.
     fn is_notable(&self) -> bool {
-        self.prominence() <= 4 || self.common_name.is_some()
+        self.prominence() <= 5 || self.common_name.is_some()
     }
 
     /// Prominence tier for ranking cone-search hits: 0 = Messier ... n =
@@ -147,7 +150,6 @@ impl ObjectInfo {
     }
 
     fn from_aliases(main_id: String, aliases: Vec<String>, otype: String, ra_deg: Option<f64>, dec_deg: Option<f64>) -> ObjectInfo {
-        let common_name = pick_common_name(&aliases);
         let mut designations = Vec::new();
         for cat in CATALOGS {
             for alias in &aliases {
@@ -158,7 +160,24 @@ impl ObjectInfo {
                 }
             }
         }
-        let aliases_norm = aliases.iter().map(|a| normalize(a)).collect();
+        let mut aliases_norm: HashSet<String> = aliases.iter().map(|a| normalize(a)).collect();
+
+        // Caldwell number from the built-in table, slotted in right after
+        // any Messier id so it shows up early in the second line.
+        if let Some(n) = crate::catalog::caldwell_number(&designations) {
+            let c = format!("C {n}");
+            if !designations.contains(&c) {
+                let pos = designations.iter().take_while(|d| d.starts_with("M ")).count();
+                designations.insert(pos, c.clone());
+            }
+            aliases_norm.insert(normalize(&c));
+        }
+
+        // Curated / user names beat SIMBAD's "NAME" aliases, which are often
+        // missing or the less common variant.
+        let common_name =
+            crate::catalog::popular_name(&designations).or_else(|| pick_common_name(&aliases));
+
         ObjectInfo {
             main_id,
             common_name,
@@ -289,6 +308,9 @@ impl Resolver {
         if key.is_empty() {
             return None;
         }
+        // "C 7" means Caldwell 7 to an astrophotographer; SIMBAD would not
+        // know. Look up the underlying NGC/IC object instead.
+        let query = crate::catalog::caldwell_target(query).unwrap_or(query);
         if !self.cache.contains_key(&key) {
             let agent = self.agent.as_ref()?;
             match fetch(agent, query) {
@@ -795,9 +817,18 @@ fn actual_title(info: &ObjectInfo) -> String {
 /// Build the two-line label: "Common Name (Designation)" over
 /// "other ids · type · coordinates".
 fn compose(info: &ObjectInfo, preferred: Option<&str>) -> Label {
+    // Title designation: what the user wrote, else the best-known catalogue
+    // id. Caldwell numbers are less recognisable than NGC/IC, so they only
+    // lead the title when the user used them; otherwise they go to line two.
     let designation = preferred
         .map(str::to_string)
-        .or_else(|| info.designations.first().cloned())
+        .or_else(|| {
+            info.designations
+                .iter()
+                .find(|d| !d.starts_with("C "))
+                .or_else(|| info.designations.first())
+                .cloned()
+        })
         .unwrap_or_else(|| info.main_id.clone());
 
     let title = match &info.common_name {
@@ -840,6 +871,7 @@ pub fn normalize(s: &str) -> String {
         .to_ascii_uppercase();
     for (long, short) in [
         ("MESSIER", "M"),
+        ("CALDWELL", "C"),
         ("CLMELOTTE", "MEL"),
         ("MELOTTE", "MEL"),
         ("CLCOLLINDER", "CR"),
@@ -1021,6 +1053,11 @@ mod tests {
         assert_eq!(designation_in_name("NGC7000A"), None);
         assert_eq!(designation_in_name("M999"), None);
         assert_eq!(designation_in_name("flat_2026"), None);
+        // Caldwell
+        assert_eq!(designation_in_name("C7_L_300s"), Some("C 7".into()));
+        assert_eq!(designation_in_name("Caldwell14_RGB"), Some("C 14".into()));
+        assert_eq!(designation_in_name("C 7"), None); // lone letter needs adjacency
+        assert_eq!(designation_in_name("C200"), None);
     }
 
     #[test]
@@ -1043,6 +1080,18 @@ mod tests {
         assert_eq!(info.main_id, "M 31");
         assert_eq!(info.common_name.as_deref(), Some("Andromeda Galaxy"));
         assert_eq!(info.designations, vec!["M 31", "NGC 224", "UGC 454", "PGC 2557"]);
+
+        // Caldwell number and curated name are added from the built-in table.
+        let xml = r#"<Sesame><Target><name>IC342</name><Resolver name="S"><otype>G</otype>
+          <jradeg>56.70</jradeg><jdedeg>68.096</jdedeg><oname>IC  342</oname>
+          <alias>IC 342</alias><alias>UGC 2847</alias><alias>LEDA 13826</alias></Resolver></Target></Sesame>"#;
+        let ic342 = parse_sesame(xml).unwrap().unwrap();
+        assert_eq!(ic342.designations, vec!["C 5", "IC 342", "UGC 2847", "PGC 13826"]);
+        assert_eq!(ic342.common_name.as_deref(), Some("Hidden Galaxy"));
+        assert!(ic342.matches("C5"));
+        assert!(ic342.matches("Caldwell 5"));
+        assert_eq!(compose(&ic342, Some("IC 342")).title, "Hidden Galaxy (IC 342)");
+        assert_eq!(compose(&ic342, Some("C 5")).title, "Hidden Galaxy (C 5)");
         assert!(info.matches("m31"));
         assert!(info.matches("NGC224"));
         assert!(!info.matches("NGC 7000"));

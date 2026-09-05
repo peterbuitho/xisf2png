@@ -163,10 +163,34 @@ Each distinct name or position is looked up once per run, so a folder of 300
 subs of one target costs one or two requests. `--no-lookup` disables all of
 this.
 
-The second line lists up to three other catalogue ids (Messier, NGC, IC,
-Sharpless, Barnard, LBN, LDN, vdB, Collinder, Melotte, Cederblad, Arp, UGC,
-PGC, HD, HIP in that priority), the SIMBAD object type in plain words, and
-J2000 coordinates. Caldwell numbers are not in SIMBAD and are not recognised.
+The second line lists up to three other catalogue ids (Messier, Caldwell,
+NGC, IC, Sharpless, Barnard, LBN, LDN, vdB, Collinder, Melotte, Cederblad,
+Arp, UGC, PGC, HD, HIP in that priority), the SIMBAD object type in plain
+words, and J2000 coordinates.
+
+**Caldwell numbers and nicknames.** SIMBAD does not know the Caldwell
+catalogue and lacks many popular nicknames, so the tool carries its own
+tables: all 109 Caldwell objects (`C7` in a file name resolves to NGC 2403,
+and NGC 2403 gets "C 7" on its second line) and about 150 common names
+("Hidden Galaxy" for IC 342, "Soul Nebula" for IC 1848, "Fireworks Galaxy"
+for NGC 6946 …). Curated names take precedence over SIMBAD's.
+
+**Your own names.** Put a text file with one `designation = Name` per line
+(`#` starts a comment) in any of these places, first found wins:
+
+- the path in the `XISF2PNG_NAMES` environment variable;
+- `xisf2png-names.txt` next to the executable;
+- `names.txt` in the per-user config folder: `%APPDATA%\xisf2png\` on
+  Windows, `~/Library/Application Support/xisf2png/` on macOS,
+  `~/.config/xisf2png/` on Linux.
+
+```
+# my names
+NGC 2403 = Hidden Galaxy
+Sh2-155  = Cave Nebula (Cepheus)
+```
+
+Your names override everything else.
 
 ## Format support
 

@@ -81,7 +81,7 @@ running window instead.
 ## Command line
 
 ```
-xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename] [--font <file>]
+xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename] [--font <file>] [-j N]
 xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite] [--filename] [--font <file>]
 xisf2png <file>... [output_dir] [--overwrite] [--resize4k] [--filename] [--font <file>]
 ```
@@ -93,6 +93,12 @@ edited in place). Explicit files may also be given instead of a folder; each
 is handled by its extension (`.png` = resize/stamp only) and written next to
 itself, or flat into `output_dir` if one is given.
 
+Files are converted **in parallel** — one worker thread per CPU (capped at 8,
+override with `-j`). The heavy work (decode, stretch, Lanczos resize, stamp,
+encode) runs concurrently; the online object lookup is serialised behind a
+shared cache, so a folder of 300 subs of one target still costs only one or
+two SIMBAD requests. Progress is printed in completion order.
+
 | Option              | Meaning                                                     |
 | ------------------- | ----------------------------------------------------------- |
 | `-r`, `--recursive` | Recurse into subfolders; the output tree mirrors the input. |
@@ -101,6 +107,7 @@ itself, or flat into `output_dir` if one is given.
 | `--filename`        | Stamp the plain file name: ignore the header `OBJECT`, never go online. (`--no-lookup` and `--offline` are aliases.) |
 | `--png-only`        | Skip XISF/FITS conversion entirely: pick up existing `.png` files in `input_dir` and only run the `--resize4k` step on them (implies `--resize4k`). With no `output_dir` the PNGs are modified in place; with one they are copied there first, honouring `--overwrite`. |
 | `--font <file>`     | A `.ttf` / `.otf` font file for the file-name stamp. Default: the bundled DejaVu Sans Condensed Bold. `--font=<file>` also works. |
+| `-j`, `--concurrency N` | Convert `N` files in parallel. Default: number of CPUs, capped at 8. `-jN` also works. |
 | `-V`, `--version`   | Print the version.                                          |
 | `-h`, `--help`      | Show help.                                                  |
 

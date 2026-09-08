@@ -4,7 +4,8 @@
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Mutex};
 
 use image::{DynamicImage, GrayImage, ImageFormat, RgbImage};
 
@@ -45,6 +46,23 @@ pub struct Options {
     /// (`.png` = resize/stamp only) and written next to itself unless
     /// `output_dir` is set, in which case all outputs go flat into it.
     pub files: Vec<PathBuf>,
+    /// Number of files to convert in parallel. `0` (the default) means
+    /// `min(available_parallelism, 8)`.
+    pub concurrency: usize,
+}
+
+/// Resolve `Options::concurrency` to an actual worker count for `job_count`
+/// files.
+fn worker_count(requested: usize, job_count: usize) -> usize {
+    let n = if requested > 0 {
+        requested
+    } else {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(8)
+    };
+    n.max(1).min(job_count.max(1))
 }
 
 impl Options {
@@ -159,59 +177,94 @@ pub fn run(
         total: files.len(),
         ..Summary::default()
     };
-    let mut resolver = Resolver::new(opts.lookup && stamper.is_some());
-
-    for (i, file) in files.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            summary.cancelled = true;
-            break;
-        }
-
-        // Display name and destination. Scanned files keep their position
-        // relative to the input folder; explicit files are flat.
-        let rel: PathBuf = if explicit {
-            file.file_name().map(PathBuf::from).unwrap_or_else(|| file.clone())
-        } else {
-            file.strip_prefix(&opts.input_dir).unwrap_or(file).to_path_buf()
-        };
-        let dest = match (&opts.output_dir, explicit) {
-            (Some(out), _) => out.join(&rel).with_extension("png"),
-            (None, true) => file.with_extension("png"),
-            (None, false) => opts.input_dir.join(&rel).with_extension("png"),
-        };
-        let rel = rel.as_path();
-
-        let (status, label, note) =
-            match process_one(file, &dest, opts, stamper.as_ref(), &mut resolver) {
-                Ok(Outcome {
-                    written: true,
-                    label,
-                    note,
-                }) => {
-                    summary.converted += 1;
-                    (FileStatus::Ok, label, note)
-                }
-                Ok(Outcome { note, .. }) => {
-                    summary.skipped += 1;
-                    (FileStatus::Skipped, None, note)
-                }
-                Err(e) => {
-                    summary.failed += 1;
-                    (FileStatus::Failed(e), None, None)
-                }
-            };
-
-        report(&Progress {
-            index: i + 1,
-            total: files.len(),
-            rel: rel.to_path_buf(),
-            status,
-            label,
-            note,
-        });
+    if files.is_empty() {
+        return Ok(summary);
     }
 
-    if let Some(e) = resolver.failure.take() {
+    // Resolve each file's display name and destination up front. Scanned files
+    // keep their position relative to the input folder; explicit files go flat.
+    let jobs: Vec<Job> = files
+        .iter()
+        .map(|file| {
+            let rel: PathBuf = if explicit {
+                file.file_name()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| file.clone())
+            } else {
+                file.strip_prefix(&opts.input_dir).unwrap_or(file).to_path_buf()
+            };
+            let dest = match (&opts.output_dir, explicit) {
+                (Some(out), _) => out.join(&rel).with_extension("png"),
+                (None, true) => file.with_extension("png"),
+                (None, false) => opts.input_dir.join(&rel).with_extension("png"),
+            };
+            Job {
+                src: file.clone(),
+                dest,
+                rel,
+            }
+        })
+        .collect();
+
+    // The online lookup runs behind a mutex: one network round-trip at a time,
+    // shared cache across workers (a run of 300 subs of one target still costs
+    // one or two SIMBAD requests). The heavy work - decode, stretch, resize,
+    // stamp, encode - runs in parallel.
+    let resolver = Mutex::new(Resolver::new(opts.lookup && stamper.is_some()));
+    let stamper = stamper.as_ref();
+    let workers = worker_count(opts.concurrency, jobs.len());
+    let next = AtomicUsize::new(0);
+    let (tx, rx) = mpsc::channel::<(usize, FileStatus, Option<String>, Option<String>)>();
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let tx = tx.clone();
+            let (jobs, next, resolver) = (&jobs, &next, &resolver);
+            scope.spawn(move || loop {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                let idx = next.fetch_add(1, Ordering::Relaxed);
+                let Some(job) = jobs.get(idx) else { break };
+                let msg = match process_one(&job.src, &job.dest, opts, stamper, resolver) {
+                    Ok(Outcome {
+                        written: true,
+                        label,
+                        note,
+                    }) => (idx, FileStatus::Ok, label, note),
+                    Ok(Outcome { note, .. }) => (idx, FileStatus::Skipped, None, note),
+                    Err(e) => (idx, FileStatus::Failed(e), None, None),
+                };
+                if tx.send(msg).is_err() {
+                    break;
+                }
+            });
+        }
+        drop(tx);
+
+        // Collector: reports in completion order, on this (single) thread.
+        for (idx, status, label, note) in rx {
+            match &status {
+                FileStatus::Ok => summary.converted += 1,
+                FileStatus::Skipped => summary.skipped += 1,
+                FileStatus::Failed(_) => summary.failed += 1,
+            }
+            report(&Progress {
+                index: idx + 1,
+                total: jobs.len(),
+                rel: jobs[idx].rel.clone(),
+                status,
+                label,
+                note,
+            });
+        }
+    });
+
+    if cancel.load(Ordering::Relaxed) {
+        summary.cancelled = true;
+    }
+
+    if let Some(e) = resolver.into_inner().unwrap().failure {
         summary.warnings.push(format!(
             "Online object lookup unavailable ({e}); file names were stamped instead."
         ));
@@ -220,13 +273,20 @@ pub fn run(
     Ok(summary)
 }
 
+/// One file's source, destination and display path.
+struct Job {
+    src: PathBuf,
+    dest: PathBuf,
+    rel: PathBuf,
+}
+
 /// Handle one file.
 fn process_one(
     src: &Path,
     dest: &Path,
     opts: &Options,
     stamper: Option<&Stamper>,
-    resolver: &mut Resolver,
+    resolver: &Mutex<Resolver>,
 ) -> Result<Outcome, String> {
     // A PNG source is only ever resized/stamped, never "converted".
     let is_png = has_ext(src, &["png"]);
@@ -265,7 +325,15 @@ fn process_one(
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let id = lookup::identify(resolver, header_object.as_deref(), header_coords, &stem);
+        let id = {
+            let mut resolver = resolver.lock().unwrap();
+            lookup::identify(
+                &mut resolver,
+                header_object.as_deref(),
+                header_coords,
+                &stem,
+            )
+        };
         if id.label != Label::plain(&stem) {
             label = Some(id.label.title.clone());
         }

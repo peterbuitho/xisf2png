@@ -25,6 +25,25 @@ fn main() -> ExitCode {
             "--resize4k" | "-resize4k" => opts.resize4k = true,
             "--png-only" => opts.png_only = true,
             "--filename" | "--no-lookup" | "--offline" => opts.lookup = false,
+            "-j" | "--concurrency" => {
+                i += 1;
+                match args.get(i).and_then(|s| s.parse::<usize>().ok()) {
+                    Some(n) if n >= 1 => opts.concurrency = n,
+                    _ => {
+                        eprintln!("-j requires a positive integer");
+                        usage();
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            _ if a.starts_with("-j") => match a[2..].parse::<usize>() {
+                Ok(n) if n >= 1 => opts.concurrency = n,
+                _ => {
+                    eprintln!("-j requires a positive integer");
+                    usage();
+                    return ExitCode::from(2);
+                }
+            },
             "--font" => {
                 i += 1;
                 match args.get(i) {
@@ -137,7 +156,7 @@ fn usage() {
     eprintln!(
         "xisf2png {} - batch convert XISF and FITS astronomical images to PNG\n\n\
          Usage:\n\
-         \x20 xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename]\n\
+         \x20 xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename] [-j N]\n\
          \x20 xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite] [--filename]\n\
          \x20 xisf2png <file>... [output_dir] [--overwrite] [--resize4k] [--filename]\n\n\
          Converts every .xisf, .fits, .fit and .fts file found in input_dir, or\n\
@@ -164,6 +183,8 @@ fn usage() {
          \x20     --font <file>  .ttf/.otf font file for the file-name stamp\n\
          \x20                    (default: bundled DejaVu Sans Condensed Bold).\n\
          \x20                    Also accepts --font=<file>.\n\
+         \x20 -j, --concurrency N  convert N files in parallel\n\
+         \x20                    (default: number of CPUs, capped at 8)\n\
          \x20 -V, --version     print version\n\
          \x20 -h, --help        show this help",
         xisf2png::VERSION

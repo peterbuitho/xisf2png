@@ -190,6 +190,7 @@ impl App {
             font: (!font.is_empty()).then(|| PathBuf::from(font)),
             lookup: self.lookup,
             files: self.files.clone(),
+            concurrency: 0,
         }
     }
 

@@ -17,17 +17,10 @@ name = "xisf2png-gui"
 path = "src/bin/gui/main.rs"
 
 [dependencies]
-roxmltree = "0.20"
-base64 = "0.22"
-hex = "0.4"
-flate2 = "1"
-lz4_flex = "0.11"
-ruzstd = "0.7"
+astropng-core = { git = "https://github.com/peterbuitho/astropng-core", tag = "v0.1.0" }
 image = { version = "0.25", default-features = false, features = ["png"] }
-ab_glyph = "0.2"
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster", "common-controls-v6"] }
-ureq = "3"
 
 # Windows only: registry access for the Explorer context-menu entry (no
 # reg.exe child process), and version-info + icon resources for the .exe files.

@@ -104,6 +104,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
 
 [[package]]
+name = "astropng-core"
+version = "0.1.0"
+source = "git+https://github.com/peterbuitho/astropng-core?tag=v0.1.0#cb7b2aaca41ecb52a0f88d2434c0d0c6bc8b65ab"
+dependencies = [
+ "ab_glyph",
+ "base64 0.22.1",
+ "flate2",
+ "hex",
+ "image",
+ "lz4_flex",
+ "roxmltree",
+ "ruzstd",
+ "ureq",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3215,17 +3231,10 @@ checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 name = "xisf2png"
 version = "0.5.0"
 dependencies = [
- "ab_glyph",
- "base64 0.22.1",
+ "astropng-core",
  "eframe",
- "flate2",
- "hex",
  "image",
- "lz4_flex",
  "rfd",
- "roxmltree",
- "ruzstd",
- "ureq",
  "winreg",
  "winresource",
 ]

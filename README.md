@@ -296,19 +296,19 @@ available as workflow artifacts.
 
 ## Dependencies
 
+The conversion pipeline (XISF/FITS parsing, stretch, resize/stamp, WCS,
+SIMBAD lookup, batch orchestration) lives in
+[`astropng-core`](https://github.com/peterbuitho/astropng-core), a shared
+crate also used by this program's Go/Nim/Zig/Scala ports. This repo depends
+on it like any other crate and keeps only the CLI, the GUI, and OS shell
+integration.
+
 | Crate       | Purpose                                     |
-| ----------- | ------------------------------------------- |
-| `ureq`      | HTTPS client for the SIMBAD lookup (rustls) |
-| `roxmltree` | XISF XML header parsing                     |
-| `base64`    | inline / embedded base64                    |
-| `hex`       | inline / embedded hex                       |
-| `flate2`    | zlib decompression                          |
-| `lz4_flex`  | lz4 / lz4hc decompression                   |
-| `ruzstd`    | zstd decompression                          |
+| ----------- | -------------------------------------------- |
 | `image`     | PNG encoding/decoding, 4K resize            |
-| `ab_glyph`  | rasterising the file-name stamp             |
 | `eframe`    | GUI (egui, OpenGL via glow, Wayland/X11)    |
 | `rfd`       | native folder / file dialogs                |
 
-The stamp font, DejaVu Sans Condensed Bold, is embedded in the binary; its
-license is in [`assets/fonts/LICENSE-DejaVu.txt`](assets/fonts/LICENSE-DejaVu.txt).
+The stamp font, DejaVu Sans Condensed Bold, is embedded in `astropng-core`;
+its license is in
+[`astropng-core/assets/fonts/LICENSE-DejaVu.txt`](https://github.com/peterbuitho/astropng-core/blob/main/assets/fonts/LICENSE-DejaVu.txt).

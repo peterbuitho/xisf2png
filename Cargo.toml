@@ -1,6 +1,6 @@
 [package]
 name = "xisf2png"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "Convert XISF and FITS astronomical images to PNG, 4K-resized and stamped with the object name"
 build = "build.rs"

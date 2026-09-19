@@ -36,11 +36,6 @@ jobs:
             # GUI: needs the system's graphics stack, so it is a normal glibc build.
             cli_target: x86_64-unknown-linux-musl
             gui_target: x86_64-unknown-linux-gnu
-          - name: linux-aarch64
-            # Native ARM64 runner (free for public repos), so no cross-linker is needed.
-            os: ubuntu-24.04-arm
-            cli_target: aarch64-unknown-linux-musl
-            gui_target: aarch64-unknown-linux-gnu
           - name: macos-universal
             os: macos-latest
             # Pseudo-target: both Apple targets are built and merged with lipo below.
